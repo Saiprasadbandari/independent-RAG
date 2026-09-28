@@ -12,7 +12,7 @@ from app.utils import CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, chunk_text, format
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
-TOP_K = 5
+TOP_K = 8
 MAX_TOKENS = 300
 # cosine similarity below this means nothing in the corpus is really about the question
 MIN_SCORE = 0.30
