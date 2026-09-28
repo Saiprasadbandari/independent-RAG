@@ -1,12 +1,10 @@
 import argparse
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
-from app.embeddings import Retriever, build_index, index_exists, load_index
-from app.rag import RAG
+from app.embeddings import index_exists, load_index
+from app.rag import run_rag_pipeline_offline, tracker
 from app.ui import build_ui
-from app.utils import CostTracker
 
 
 def parse_args():
@@ -21,11 +19,9 @@ def parse_args():
 def main():
     args = parse_args()
     load_dotenv()
-    client = OpenAI()
-    tracker = CostTracker()
 
     if args.rebuild or args.build_only or not index_exists():
-        index, chunks = build_index(client, tracker)
+        index, chunks = run_rag_pipeline_offline()
     else:
         index, chunks = load_index()
         print(f"loaded index with {index.ntotal} chunks — {tracker.summary()}")
@@ -33,8 +29,7 @@ def main():
     if args.build_only:
         return
 
-    rag = RAG(client, Retriever(client, index, chunks, tracker), tracker)
-    build_ui(rag).launch(server_port=args.port, share=args.share)
+    build_ui(index, chunks).launch(server_port=args.port, share=args.share)
 
 
 if __name__ == "__main__":

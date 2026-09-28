@@ -3,89 +3,47 @@ from pathlib import Path
 
 import faiss
 import numpy as np
-from openai import OpenAI
 
-from app.utils import DATA_DIR, CostTracker, chunk_text
-
-EMBED_MODEL = "text-embedding-3-small"
-BATCH_SIZE = 256
+from app.utils import DATA_DIR
 
 CORPUS_PATH = DATA_DIR / "corpus.json"
 INDEX_PATH = DATA_DIR / "my_index.faiss"
 CHUNKS_PATH = DATA_DIR / "chunks.json"
 
 
-def load_corpus(path: Path = CORPUS_PATH) -> list[dict]:
-    if not path.exists():
-        raise FileNotFoundError(f"{path} not found — run scripts/extract.py first.")
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def build_chunks(corpus: list[dict]) -> list[dict]:
-    chunks = []
-    for entry in corpus:
-        for text in chunk_text(entry["text"]):
-            chunks.append({
-                "id": len(chunks),
-                "source": entry["source"],
-                "page": entry["page"],
-                "text": text,
-            })
-    return chunks
-
-
-def embed(client: OpenAI, texts: list[str], tracker: CostTracker) -> np.ndarray:
-    vectors = []
-    for start in range(0, len(texts), BATCH_SIZE):
-        tracker.check()
-        resp = client.embeddings.create(model=EMBED_MODEL, input=texts[start:start + BATCH_SIZE])
-        tracker.add(EMBED_MODEL, resp.usage.prompt_tokens)
-        vectors.extend(d.embedding for d in resp.data)
-    arr = np.asarray(vectors, dtype="float32")
+def build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
+    vectors = np.ascontiguousarray(embeddings, dtype="float32")
     # normalized vectors + inner product index = cosine similarity
-    faiss.normalize_L2(arr)
-    return arr
-
-
-def build_index(client: OpenAI, tracker: CostTracker) -> tuple[faiss.Index, list[dict]]:
-    chunks = build_chunks(load_corpus())
-    print(f"embedding {len(chunks)} chunks with {EMBED_MODEL}...")
-    vectors = embed(client, [c["text"] for c in chunks], tracker)
-
+    faiss.normalize_L2(vectors)
     index = faiss.IndexFlatIP(vectors.shape[1])
     index.add(vectors)
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    faiss.write_index(index, str(INDEX_PATH))
-    CHUNKS_PATH.write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"saved {INDEX_PATH.name} and {CHUNKS_PATH.name} — {tracker.summary()}")
-    return index, chunks
+    return index
 
 
-def load_index() -> tuple[faiss.Index, list[dict]]:
-    index = faiss.read_index(str(INDEX_PATH))
-    chunks = json.loads(CHUNKS_PATH.read_text(encoding="utf-8"))
+def save_index_and_chunks(index: faiss.Index, chunks: list[dict],
+                          index_path: Path = INDEX_PATH, chunks_path: Path = CHUNKS_PATH) -> None:
+    Path(index_path).parent.mkdir(parents=True, exist_ok=True)
+    faiss.write_index(index, str(index_path))
+    Path(chunks_path).write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_index(index_path: Path = INDEX_PATH, chunks_path: Path = CHUNKS_PATH) -> tuple[faiss.Index, list[dict]]:
+    index = faiss.read_index(str(index_path))
+    chunks = json.loads(Path(chunks_path).read_text(encoding="utf-8"))
     if index.ntotal != len(chunks):
         raise ValueError("Index and chunks.json are out of sync — rebuild with --rebuild.")
     return index, chunks
 
 
-def index_exists() -> bool:
-    return INDEX_PATH.exists() and CHUNKS_PATH.exists()
+def index_exists(index_path: Path = INDEX_PATH, chunks_path: Path = CHUNKS_PATH) -> bool:
+    return Path(index_path).exists() and Path(chunks_path).exists()
 
 
-class Retriever:
-    def __init__(self, client: OpenAI, index: faiss.Index, chunks: list[dict], tracker: CostTracker):
-        self.client = client
-        self.index = index
-        self.chunks = chunks
-        self.tracker = tracker
-
-    def search(self, query: str, k: int = 5) -> list[dict]:
-        vector = embed(self.client, [query], self.tracker)
-        scores, ids = self.index.search(vector, k)
-        return [
-            {**self.chunks[i], "score": float(s)}
-            for s, i in zip(scores[0], ids[0])
-            if i != -1
-        ]
+def search(index: faiss.Index, chunks: list[dict], query_vector: np.ndarray, k: int) -> list[dict]:
+    """query_vector must already be normalized; results come back highest score first."""
+    scores, ids = index.search(query_vector, k)
+    return [
+        {**chunks[i], "score": float(s)}
+        for s, i in zip(scores[0], ids[0])
+        if i != -1
+    ]

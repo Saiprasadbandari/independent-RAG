@@ -1,6 +1,6 @@
 import gradio as gr
 
-from app.rag import RAG
+from app import rag
 from app.utils import format_citation, format_retrieved
 
 EXAMPLES = [
@@ -17,12 +17,12 @@ def format_answer_sources(answer) -> str:
     return "\n".join(f"- **[{s['ref']}]** {format_citation(s)}" for s in answer.sources)
 
 
-def build_ui(rag: RAG) -> gr.Blocks:
+def build_ui(index, chunks: list[dict]) -> gr.Blocks:
     def respond(question: str):
         if not question or not question.strip():
             return "Please enter a question.", "", "", rag.tracker.summary()
         try:
-            answer = rag.ask(question)
+            answer = rag.ask(question, index, chunks)
         except RuntimeError as e:
             return f"**Error:** {e}", "", "", rag.tracker.summary()
         retrieved = format_retrieved(answer.retrieved) if answer.retrieved else "_Nothing retrieved._"
