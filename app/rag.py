@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 from openai import OpenAI
 
-from app.embeddings import Retriever
+from app.embedding import Retriever
 from app.utils import CostTracker, format_citation
 
 CHAT_MODEL = "gpt-4o-mini"
