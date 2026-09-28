@@ -1,18 +1,9 @@
-"""
-Entry point for the RAG app.
-
-Usage:
-    python -m app.main                 # load the saved index and launch the UI
-    python -m app.main --rebuild       # re-embed the corpus, rebuild the index, then launch
-    python -m app.main --build-only    # just build/refresh the index, don't launch the UI
-"""
-
 import argparse
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from app.embedding import Retriever, build_index, index_exists, load_index
+from app.embeddings import Retriever, build_index, index_exists, load_index
 from app.rag import RAG
 from app.ui import build_ui
 from app.utils import CostTracker
@@ -20,10 +11,8 @@ from app.utils import CostTracker
 
 def parse_args():
     parser = argparse.ArgumentParser(description="EU AI Act RAG app")
-    parser.add_argument("--rebuild", action="store_true",
-                         help="re-embed data/corpus.json and rebuild the FAISS index")
-    parser.add_argument("--build-only", action="store_true",
-                         help="build the index and exit without starting the UI")
+    parser.add_argument("--rebuild", action="store_true", help="re-embed corpus.json and rebuild the FAISS index")
+    parser.add_argument("--build-only", action="store_true", help="build the index and exit without starting the UI")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="create a public Gradio link")
     return parser.parse_args()
@@ -44,8 +33,7 @@ def main():
     if args.build_only:
         return
 
-    retriever = Retriever(client, index, chunks, tracker)
-    rag = RAG(client, retriever, tracker)
+    rag = RAG(client, Retriever(client, index, chunks, tracker), tracker)
     build_ui(rag).launch(server_port=args.port, share=args.share)
 
 
