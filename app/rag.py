@@ -10,6 +10,7 @@ from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH
                            get_embeddings, load_corpus)
 from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
                        fingerprint, format_citation, normalize_query)
+from app.rerank import DECISION_MODEL, DECISION_SYSTEM, RELEVANCE_QUESTION, score_relevance
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
@@ -17,6 +18,10 @@ TOP_K = 8
 MAX_TOKENS = 300
 # cosine similarity below this means nothing in the corpus is really about the question
 MIN_SCORE = 0.30
+# FAISS pulls this many candidates; the re-ranker keeps the best TOP_K of them
+RERANK_CANDIDATES = 15
+# re-ranker P(yes) a passage needs to make it into the context
+MIN_RELEVANCE = 0.5
 NO_INFO = "I don't have information about that in the provided documents."
 
 SYSTEM_PROMPT = f"""You are a helpful assistant that answers questions about the EU AI Act.
@@ -190,10 +195,13 @@ def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
 
 
 class RAG:
-    """Online pipeline with two caches in front of the API calls:
+    """Online pipeline with caches in front of every API call:
 
     1. query cache     — question seen before? return the stored answer, zero API calls
-    2. retrieval cache — question retrieved before? reuse the chunks, skip the embedding call
+    2. retrieval cache — question retrieved before? reuse the candidates, skip the embedding call
+    3. rerank cache    — passage already judged for this question? reuse its relevance
+    4. re-rank: a yes/no relevance decision per candidate (app/rerank.py), best TOP_K kept
+    5. generate with gpt-4o-mini from the re-ranked passages
     """
 
     def __init__(self, client: OpenAI, retriever: Retriever, tracker: CostTracker, top_k: int = TOP_K,
@@ -206,20 +214,37 @@ class RAG:
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
-                                         fingerprint(index_id, EMBEDDING_MODEL, top_k))
+                                         fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES))
+        self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(
+            index_id, DECISION_MODEL, DECISION_SYSTEM, RELEVANCE_QUESTION,
+        ))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
+            RERANK_CANDIDATES, MIN_RELEVANCE, DECISION_MODEL, DECISION_SYSTEM, RELEVANCE_QUESTION,
         ))
-        print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals")
+        print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
+              f"{len(self.rerank_cache)} re-rankings")
 
     def retrieve(self, question: str) -> list[dict]:
         key = normalize_query(question)
         hit = self.retrieval_cache.get(key)
         if hit is not None:
             return [{**self.retriever.chunks[i], "score": s} for i, s in hit]
-        retrieved = self.retriever.search(question, k=self.top_k)
+        retrieved = self.retriever.search(question, k=RERANK_CANDIDATES)
         self.retrieval_cache.set(key, [[c["id"], c["score"]] for c in retrieved])
         return retrieved
+
+    def rerank(self, question: str, candidates: list[dict]) -> list[dict]:
+        """Candidates with a "relevance" P(yes) attached, most relevant first."""
+        key = normalize_query(question)
+        judged = dict(self.rerank_cache.get(key) or {})
+        unjudged = [c for c in candidates if str(c["id"]) not in judged]
+        if unjudged:
+            relevance = score_relevance(self.client, self.tracker, question, unjudged)
+            judged.update({str(c["id"]): p for c, p in zip(unjudged, relevance)})
+            self.rerank_cache.set(key, judged)
+        ranked = [{**c, "relevance": judged[str(c["id"])]} for c in candidates]
+        return sorted(ranked, key=lambda c: c["relevance"], reverse=True)
 
     def ask(self, question: str) -> Answer:
         """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI."""
@@ -230,14 +255,19 @@ class RAG:
             return Answer(**{**hit, "question": question, "cost": 0.0, "cached": True})
 
         start = self.tracker.total
-        retrieved = self.retrieve(question)
-        text = generate_answer(question, retrieved, self.client, self.tracker)
+        candidates = self.retrieve(question)
+        # only pay to re-rank passages that are at least loosely similar; off-topic stops here
+        plausible = relevant_chunks(candidates)
+        ranked = self.rerank(question, plausible) if plausible else []
+        context = [c for c in ranked if c["relevance"] >= MIN_RELEVANCE][:self.top_k]
+
+        text = generate_answer(question, context, self.client, self.tracker)
         in_scope = NO_INFO not in text
         answer = Answer(
             question=question,
             text=text,
-            sources=cited_sources(text, relevant_chunks(retrieved)) if in_scope else [],
-            retrieved=retrieved,
+            sources=cited_sources(text, context) if in_scope else [],
+            retrieved=ranked + [c for c in candidates if c not in plausible],
             in_scope=in_scope,
             cost=self.tracker.total - start,
         )

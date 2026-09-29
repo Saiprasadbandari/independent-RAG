@@ -14,7 +14,6 @@ CHUNK_OVERLAP = 200
 PRICES = {
     "text-embedding-3-small": {"input": 0.02, "output": 0.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "jev": {"input": 0.042, "output": 0.0},
 }
 BUDGET_USD = 5.0
 
@@ -138,5 +137,6 @@ def format_retrieved(chunks: list[dict], preview: int = 400) -> str:
     blocks = []
     for i, c in enumerate(chunks, 1):
         text = c["text"] if len(c["text"]) <= preview else c["text"][:preview].rstrip() + "…"
-        blocks.append(f"**[{i}] {format_citation(c)}** — score {c['score']:.2f}\n\n> {text}")
+        relevance = f" · relevance {c['relevance']:.2f}" if "relevance" in c else ""
+        blocks.append(f"**[{i}] {format_citation(c)}** — score {c['score']:.2f}{relevance}\n\n> {text}")
     return "\n\n---\n\n".join(blocks)

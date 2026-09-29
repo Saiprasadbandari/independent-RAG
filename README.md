@@ -52,5 +52,18 @@ app/utils.py           chunking, cost tracking, formatting helpers
 ## Budget
 
 Every API call is priced and logged to `data/cost.json`. Calls are refused once total spend
-reaches $5. Embedding the full corpus costs well under $0.01; each question is roughly
-$0.0005. Off-topic questions (no passage above the similarity threshold) skip the LLM call.
+reaches $5. Embedding the full corpus costs well under $0.01; a new question costs roughly
+$0.001 including re-ranking. Off-topic questions (no passage above the similarity threshold)
+skip re-ranking and the LLM call.
+
+## Re-ranking and caching
+
+- **Re-ranking** (`app/rerank.py`): FAISS pulls 15 candidates, then each one gets a yes/no
+  "does this passage help answer the question?" decision from gpt-4o-mini. The model is limited
+  to a single token and P(yes) is read from its logprobs, so every decision is a probability
+  from 0 to 1 rather than generated text (the same idea as TypeSafe's Jev). Passages with
+  P(yes) >= 0.5 are kept, best 8 go to the answer prompt.
+- **Caches** (`data/cache/`): repeated questions are answered from the query cache with no API
+  calls; the retrieval and re-rank caches skip the embedding and relevance calls when only the
+  answer needs regenerating. All caches reset automatically when the index, models, prompts or
+  thresholds change. Delete `data/cache/` to clear them by hand.
