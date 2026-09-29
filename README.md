@@ -93,3 +93,20 @@ similarity threshold) skip re-ranking and the LLM call.
   results by category and sub-type, the priority questions, and which stage each failure came
   from (retrieval, ranking or generation). Its calibration table shows whether each confidence
   band is right as often as it claims; use it to tune the weights in `app/reflection.py`.
+
+## Using the app
+
+- **Follow-up questions**: the chat remembers the conversation. A follow-up such as "what about
+  the second requirement?" is rewritten into a standalone question from the last 3 turns (one
+  small gpt-4o-mini call, cached), and the answer shows how it was interpreted. The 🗑 icon or
+  "Clear conversation" starts over.
+- **Sources**: the panel next to the chat shows the full text of every passage the model was
+  given, with the cited ones marked ✅, plus their relevance and similarity scores. Click any
+  earlier answer to see its sources. Candidates that didn't make it into the context are under
+  "Other retrieved candidates".
+- **Feedback**: 👍/👎 under each answer is logged to `data/feedback.jsonl` with the question, the
+  answer, its confidence, and the cited and context pages.
+- **Progress**: while an answer is being prepared the chat shows the current stage (understanding
+  the follow-up, embedding and searching, re-ranking, generating, checking confidence).
+- **Export**: download the whole conversation or one answer (click it first; the latest answer
+  otherwise) as .txt or .pdf.

@@ -32,6 +32,17 @@ ANSWER_FORMAT_VERSION = 2
 REF_BRACKET_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,]\s*\d+)*)\s*\]")
 # "[Source: EU AI Regulations.pdf, p. 9]" — the label from build_context, copied by the model
 SOURCE_LABEL_RE = re.compile(r"\[Source:\s*(.+?),\s*p\.\s*(\d+)\s*\]")
+# follow-ups are rewritten into a standalone question using this many previous turns
+HISTORY_TURNS = 3
+HISTORY_ANSWER_CHARS = 600
+REWRITE_MAX_TOKENS = 100
+CONDENSE_PROMPT = """Rewrite the user's latest question so it can be understood without the conversation.
+Resolve references such as "it", "that", "the second requirement" using the conversation.
+Keep everything else as the user wrote it. If the question is already standalone, return it unchanged.
+Reply with the rewritten question only."""
+# progress stages RAG.ask reports through on_stage, in order
+STAGES = ("rewriting", "searching", "reranking", "generating", "checking")
+
 REFUSAL_RE = re.compile(
     r"\b(?:don't|do not|doesn't|does not|cannot|can't)\s+(?:have|contain|provide|include|find)\b"
     r"[^.]*\binformation\b", re.IGNORECASE)
@@ -155,6 +166,36 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
     return text
 
 
+def history_answer(answer: str) -> str:
+    """An earlier answer as context for rewriting: no citation markers, trimmed."""
+    answer = re.sub(r"\s*\[[^\]]*\]", "", answer.replace(TRUNCATED_NOTE, ""))
+    return answer[:HISTORY_ANSWER_CHARS]
+
+
+def condense_question(question: str, history: list[tuple[str, str]],
+                      client: OpenAI | None = None, tracker: CostTracker | None = None) -> str:
+    """Rewrite a follow-up ("what about the second one?") into a standalone question.
+
+    history: previous (question, answer) turns, oldest first.
+    """
+    if not history:
+        return question
+    client, tracker = client or get_client(), tracker or get_tracker()
+    turns = "\n".join(f"User: {q}\nAssistant: {history_answer(a)}" for q, a in history[-HISTORY_TURNS:])
+    tracker.check()
+    resp = client.chat.completions.create(
+        model=CHAT_MODEL,
+        temperature=0,
+        max_tokens=REWRITE_MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": CONDENSE_PROMPT},
+            {"role": "user", "content": f"Conversation:\n{turns}\n\nLatest question: {question}"},
+        ],
+    )
+    track_cost(resp, tracker=tracker)
+    return (resp.choices[0].message.content or "").strip().strip('"') or question
+
+
 # ============================================================================
 # PART 4: COMPLETE PIPELINE
 # ============================================================================
@@ -195,6 +236,8 @@ def track_cost(response, is_embedding: bool = False, tracker: CostTracker | None
 class Answer:
     question: str
     text: str
+    # what was actually searched for: the question itself, or a follow-up rewritten using history
+    standalone_question: str = ""
     sources: list[dict] = field(default_factory=list)
     retrieved: list[dict] = field(default_factory=list)
     in_scope: bool = True
@@ -271,6 +314,9 @@ class RAG:
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
             RERANK_CANDIDATES, reranker_id, ANSWER_FORMAT_VERSION, REFLECTION_VERSION,
         ))
+        self.rewrite_cache = DiskCache(cache_dir / "rewrites.json", fingerprint(
+            CHAT_MODEL, CONDENSE_PROMPT, HISTORY_TURNS, HISTORY_ANSWER_CHARS, REWRITE_MAX_TOKENS,
+        ))
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
 
@@ -295,26 +341,52 @@ class RAG:
         ranked = [{**c, "relevance": judged[str(c["id"])]} for c in candidates]
         return sorted(ranked, key=lambda c: c["relevance"], reverse=True)
 
-    def ask(self, question: str) -> Answer:
-        """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI."""
+    def condense(self, question: str, history: list[tuple[str, str]]) -> str:
+        key = fingerprint(history[-HISTORY_TURNS:], normalize_query(question))
+        hit = self.rewrite_cache.get(key)
+        if hit is not None:
+            return hit
+        standalone = condense_question(question, history, self.client, self.tracker)
+        self.rewrite_cache.set(key, standalone)
+        return standalone
+
+    def ask(self, question: str, history: list[tuple[str, str]] | None = None,
+            on_stage=None) -> Answer:
+        """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI.
+
+        history: previous (question, answer) turns, so follow-ups like "what about the second
+        requirement?" work. on_stage: called with each name in STAGES as the pipeline reaches it.
+        """
+        stage = on_stage or (lambda name: None)
         question = question.strip()
-        key = normalize_query(question)
+        start = self.tracker.total
+
+        standalone = question
+        if history:
+            stage("rewriting")
+            standalone = self.condense(question, history)
+
+        key = normalize_query(standalone)
         hit = self.query_cache.get(key)
         if hit is not None:
-            return Answer(**{**hit, "question": question, "cost": 0.0, "cached": True})
+            return Answer(**{**hit, "question": question, "standalone_question": standalone,
+                             "cost": self.tracker.total - start, "cached": True})
 
-        start = self.tracker.total
-        candidates = self.retrieve(question)
+        stage("searching")
+        candidates = self.retrieve(standalone)
         # only re-rank passages that are at least loosely similar; off-topic stops here
         plausible = relevant_chunks(candidates)
         if self.reranker and plausible:
-            ranked = self.rerank(question, plausible)
+            stage("reranking")
+            ranked = self.rerank(standalone, plausible)
             context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
         else:
             ranked = plausible
             context = plausible[:self.top_k]
 
-        text = generate_answer(question, context, self.client, self.tracker)
+        stage("generating")
+        text = generate_answer(standalone, context, self.client, self.tracker)
+        stage("checking")
         truncated = text.endswith(TRUNCATED_NOTE)
         in_scope = not is_refusal(text)
         sources = cited_sources(text, context) if in_scope else []
@@ -324,6 +396,7 @@ class RAG:
         answer = Answer(
             question=question,
             text=text,
+            standalone_question=standalone,
             sources=sources,
             retrieved=retrieved,
             in_scope=in_scope,
