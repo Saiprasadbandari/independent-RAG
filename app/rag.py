@@ -10,7 +10,7 @@ from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH
                            get_embeddings, load_corpus)
 from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
                        fingerprint, format_citation, normalize_query)
-from app.rerank import DECISION_MODEL, DECISION_SYSTEM, RELEVANCE_QUESTION, score_relevance
+from app.rerank import load_reranker
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
@@ -19,9 +19,8 @@ MAX_TOKENS = 300
 # cosine similarity below this means nothing in the corpus is really about the question
 MIN_SCORE = 0.30
 # FAISS pulls this many candidates; the re-ranker keeps the best TOP_K of them
+# (relevance cut-off lives with each re-ranker in app/rerank.py)
 RERANK_CANDIDATES = 15
-# re-ranker P(yes) a passage needs to make it into the context
-MIN_RELEVANCE = 0.5
 NO_INFO = "I don't have information about that in the provided documents."
 
 SYSTEM_PROMPT = f"""You are a helpful assistant that answers questions about the EU AI Act.
@@ -200,7 +199,7 @@ class RAG:
     1. query cache     — question seen before? return the stored answer, zero API calls
     2. retrieval cache — question retrieved before? reuse the candidates, skip the embedding call
     3. rerank cache    — passage already judged for this question? reuse its relevance
-    4. re-rank: a yes/no relevance decision per candidate (app/rerank.py), best TOP_K kept
+    4. re-rank: relevance probability per candidate (app/rerank.py, local GPU), best TOP_K kept
     5. generate with gpt-4o-mini from the re-ranked passages
     """
 
@@ -210,17 +209,17 @@ class RAG:
         self.retriever = retriever
         self.tracker = tracker
         self.top_k = top_k
+        self.reranker = load_reranker(client, tracker)
 
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
                                          fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES))
-        self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(
-            index_id, DECISION_MODEL, DECISION_SYSTEM, RELEVANCE_QUESTION,
-        ))
+        self.rerank_cache = DiskCache(cache_dir / "rerank.json",
+                                      fingerprint(index_id, self.reranker.name))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
-            RERANK_CANDIDATES, MIN_RELEVANCE, DECISION_MODEL, DECISION_SYSTEM, RELEVANCE_QUESTION,
+            RERANK_CANDIDATES, self.reranker.name, self.reranker.min_relevance,
         ))
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
@@ -240,7 +239,7 @@ class RAG:
         judged = dict(self.rerank_cache.get(key) or {})
         unjudged = [c for c in candidates if str(c["id"]) not in judged]
         if unjudged:
-            relevance = score_relevance(self.client, self.tracker, question, unjudged)
+            relevance = self.reranker.score(question, unjudged)
             judged.update({str(c["id"]): p for c, p in zip(unjudged, relevance)})
             self.rerank_cache.set(key, judged)
         ranked = [{**c, "relevance": judged[str(c["id"])]} for c in candidates]
@@ -259,7 +258,7 @@ class RAG:
         # only pay to re-rank passages that are at least loosely similar; off-topic stops here
         plausible = relevant_chunks(candidates)
         ranked = self.rerank(question, plausible) if plausible else []
-        context = [c for c in ranked if c["relevance"] >= MIN_RELEVANCE][:self.top_k]
+        context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
 
         text = generate_answer(question, context, self.client, self.tracker)
         in_scope = NO_INFO not in text
