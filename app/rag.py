@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import faiss
@@ -8,7 +8,9 @@ from openai import OpenAI
 
 from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH, Retriever,
                            get_embeddings, load_corpus)
-from app.utils import CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, chunk_text, format_citation
+from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
+                       fingerprint, format_citation, normalize_query)
+from app.rerank import load_reranker
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
@@ -16,6 +18,9 @@ TOP_K = 8
 MAX_TOKENS = 300
 # cosine similarity below this means nothing in the corpus is really about the question
 MIN_SCORE = 0.30
+# FAISS pulls this many candidates; the re-ranker keeps the best TOP_K of them
+# (relevance cut-off lives with each re-ranker in app/rerank.py)
+RERANK_CANDIDATES = 15
 NO_INFO = "I don't have information about that in the provided documents."
 
 SYSTEM_PROMPT = f"""You are a helpful assistant that answers questions about the EU AI Act.
@@ -174,6 +179,7 @@ class Answer:
     retrieved: list[dict] = field(default_factory=list)
     in_scope: bool = True
     cost: float = 0.0
+    cached: bool = False
 
 
 def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
@@ -188,24 +194,85 @@ def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
 
 
 class RAG:
-    def __init__(self, client: OpenAI, retriever: Retriever, tracker: CostTracker, top_k: int = TOP_K):
+    """Online pipeline with caches in front of every API call:
+
+    1. query cache     — question seen before? return the stored answer, zero API calls
+    2. retrieval cache — question retrieved before? reuse the candidates, skip the embedding call
+    3. rerank cache    — passage already judged for this question? reuse its relevance
+    4. re-rank: relevance probability per candidate (app/rerank.py, local GPU), best TOP_K kept
+    5. generate with gpt-4o-mini from the re-ranked passages
+    """
+
+    def __init__(self, client: OpenAI, retriever: Retriever, tracker: CostTracker, top_k: int = TOP_K,
+                 cache_dir: Path = CACHE_DIR):
         self.client = client
         self.retriever = retriever
         self.tracker = tracker
         self.top_k = top_k
+        self.reranker = load_reranker()
+        reranker_id = (self.reranker.name, self.reranker.min_relevance) if self.reranker else None
+
+        # a rebuilt index or a changed model/prompt/threshold invalidates the caches
+        index_id = fingerprint([c["text"] for c in retriever.chunks])
+        self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
+                                         fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES))
+        self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
+        self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
+            index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
+            RERANK_CANDIDATES, reranker_id,
+        ))
+        print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
+              f"{len(self.rerank_cache)} re-rankings")
+
+    def retrieve(self, question: str) -> list[dict]:
+        key = normalize_query(question)
+        hit = self.retrieval_cache.get(key)
+        if hit is not None:
+            return [{**self.retriever.chunks[i], "score": s} for i, s in hit]
+        retrieved = self.retriever.search(question, k=RERANK_CANDIDATES)
+        self.retrieval_cache.set(key, [[c["id"], c["score"]] for c in retrieved])
+        return retrieved
+
+    def rerank(self, question: str, candidates: list[dict]) -> list[dict]:
+        """Candidates with a "relevance" score attached, most relevant first."""
+        key = normalize_query(question)
+        judged = dict(self.rerank_cache.get(key) or {})
+        unjudged = [c for c in candidates if str(c["id"]) not in judged]
+        if unjudged:
+            relevance = self.reranker.score(question, unjudged)
+            judged.update({str(c["id"]): p for c, p in zip(unjudged, relevance)})
+            self.rerank_cache.set(key, judged)
+        ranked = [{**c, "relevance": judged[str(c["id"])]} for c in candidates]
+        return sorted(ranked, key=lambda c: c["relevance"], reverse=True)
 
     def ask(self, question: str) -> Answer:
         """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI."""
         question = question.strip()
+        key = normalize_query(question)
+        hit = self.query_cache.get(key)
+        if hit is not None:
+            return Answer(**{**hit, "question": question, "cost": 0.0, "cached": True})
+
         start = self.tracker.total
-        retrieved = self.retriever.search(question, k=self.top_k)
-        text = generate_answer(question, retrieved, self.client, self.tracker)
+        candidates = self.retrieve(question)
+        # only re-rank passages that are at least loosely similar; off-topic stops here
+        plausible = relevant_chunks(candidates)
+        if self.reranker and plausible:
+            ranked = self.rerank(question, plausible)
+            context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
+        else:
+            ranked = plausible
+            context = plausible[:self.top_k]
+
+        text = generate_answer(question, context, self.client, self.tracker)
         in_scope = NO_INFO not in text
-        return Answer(
+        answer = Answer(
             question=question,
             text=text,
-            sources=cited_sources(text, relevant_chunks(retrieved)) if in_scope else [],
-            retrieved=retrieved,
+            sources=cited_sources(text, context) if in_scope else [],
+            retrieved=ranked + [c for c in candidates if c not in plausible],
             in_scope=in_scope,
             cost=self.tracker.total - start,
         )
+        self.query_cache.set(key, asdict(answer))
+        return answer

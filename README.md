@@ -52,5 +52,20 @@ app/utils.py           chunking, cost tracking, formatting helpers
 ## Budget
 
 Every API call is priced and logged to `data/cost.json`. Calls are refused once total spend
-reaches $5. Embedding the full corpus costs well under $0.01; each question is roughly
-$0.0005. Off-topic questions (no passage above the similarity threshold) skip the LLM call.
+reaches $5. Embedding the full corpus costs well under $0.01; a new question costs roughly
+$0.0004 (re-ranking runs locally for free). Off-topic questions (no passage above the
+similarity threshold) skip re-ranking and the LLM call.
+
+## Re-ranking and caching
+
+- **Re-ranking** (`app/rerank.py`): FAISS pulls 15 candidates, then the `BAAI/bge-reranker-base`
+  cross-encoder scores each one from 0 to 1 for how well it answers the question. Passages
+  scoring at least 0.1 are kept, best 8 go to the answer prompt. It runs on your GPU (Apple
+  Silicon via MPS, NVIDIA via CUDA, CPU otherwise) with no API calls. The model (~1.1 GB)
+  downloads from Hugging Face on first start; after that it loads in ~10 s and scores a question
+  in under a second. Without `sentence-transformers` installed, re-ranking is skipped and FAISS
+  order is used.
+- **Caches** (`data/cache/`): repeated questions are answered from the query cache with no API
+  calls; the retrieval and re-rank caches skip the embedding and relevance calls when only the
+  answer needs regenerating. All caches reset automatically when the index, models, prompts or
+  thresholds change. Delete `data/cache/` to clear them by hand.

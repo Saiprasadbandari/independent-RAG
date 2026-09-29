@@ -1,9 +1,11 @@
+import hashlib
 import json
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+CACHE_DIR = DATA_DIR / "cache"
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -16,6 +18,45 @@ PRICES = {
 BUDGET_USD = 5.0
 
 SENTENCE_END_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
+
+
+def normalize_query(query: str) -> str:
+    """'What is  high-risk AI?' and 'what is high-risk ai' share a cache entry."""
+    return re.sub(r"\s+", " ", query).strip().rstrip("?.! ").lower()
+
+
+def fingerprint(*parts) -> str:
+    return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+class DiskCache:
+    """JSON-backed key/value store that survives restarts.
+
+    `namespace` fingerprints whatever the cached values depend on (index contents,
+    model, prompt, top-k...). When it changes, the old entries are dropped so a
+    rebuilt index or edited prompt never serves stale results.
+    """
+
+    def __init__(self, path: Path, namespace: str):
+        self.path = path
+        self.namespace = namespace
+        self.entries = {}
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("namespace") == namespace:
+                self.entries = saved.get("entries", {})
+
+    def get(self, key: str):
+        return self.entries.get(key)
+
+    def set(self, key: str, value) -> None:
+        self.entries[key] = value
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"namespace": self.namespace, "entries": self.entries},
+                                        ensure_ascii=False), encoding="utf-8")
+
+    def __len__(self) -> int:
+        return len(self.entries)
 
 
 def split_sentences(text: str) -> list[str]:
@@ -96,5 +137,6 @@ def format_retrieved(chunks: list[dict], preview: int = 400) -> str:
     blocks = []
     for i, c in enumerate(chunks, 1):
         text = c["text"] if len(c["text"]) <= preview else c["text"][:preview].rstrip() + "…"
-        blocks.append(f"**[{i}] {format_citation(c)}** — score {c['score']:.2f}\n\n> {text}")
+        relevance = f" · relevance {c['relevance']:.2f}" if "relevance" in c else ""
+        blocks.append(f"**[{i}] {format_citation(c)}** — score {c['score']:.2f}{relevance}\n\n> {text}")
     return "\n\n---\n\n".join(blocks)
