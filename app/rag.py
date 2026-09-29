@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import faiss
@@ -8,7 +8,8 @@ from openai import OpenAI
 
 from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH, Retriever,
                            get_embeddings, load_corpus)
-from app.utils import CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, chunk_text, format_citation
+from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
+                       fingerprint, format_citation, normalize_query)
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
@@ -174,6 +175,7 @@ class Answer:
     retrieved: list[dict] = field(default_factory=list)
     in_scope: bool = True
     cost: float = 0.0
+    cached: bool = False
 
 
 def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
@@ -188,20 +190,50 @@ def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
 
 
 class RAG:
-    def __init__(self, client: OpenAI, retriever: Retriever, tracker: CostTracker, top_k: int = TOP_K):
+    """Online pipeline with two caches in front of the API calls:
+
+    1. query cache     — question seen before? return the stored answer, zero API calls
+    2. retrieval cache — question retrieved before? reuse the chunks, skip the embedding call
+    """
+
+    def __init__(self, client: OpenAI, retriever: Retriever, tracker: CostTracker, top_k: int = TOP_K,
+                 cache_dir: Path = CACHE_DIR):
         self.client = client
         self.retriever = retriever
         self.tracker = tracker
         self.top_k = top_k
 
+        # a rebuilt index or a changed model/prompt/threshold invalidates the caches
+        index_id = fingerprint([c["text"] for c in retriever.chunks])
+        self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
+                                         fingerprint(index_id, EMBEDDING_MODEL, top_k))
+        self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
+            index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
+        ))
+        print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals")
+
+    def retrieve(self, question: str) -> list[dict]:
+        key = normalize_query(question)
+        hit = self.retrieval_cache.get(key)
+        if hit is not None:
+            return [{**self.retriever.chunks[i], "score": s} for i, s in hit]
+        retrieved = self.retriever.search(question, k=self.top_k)
+        self.retrieval_cache.set(key, [[c["id"], c["score"]] for c in retrieved])
+        return retrieved
+
     def ask(self, question: str) -> Answer:
         """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI."""
         question = question.strip()
+        key = normalize_query(question)
+        hit = self.query_cache.get(key)
+        if hit is not None:
+            return Answer(**{**hit, "question": question, "cost": 0.0, "cached": True})
+
         start = self.tracker.total
-        retrieved = self.retriever.search(question, k=self.top_k)
+        retrieved = self.retrieve(question)
         text = generate_answer(question, retrieved, self.client, self.tracker)
         in_scope = NO_INFO not in text
-        return Answer(
+        answer = Answer(
             question=question,
             text=text,
             sources=cited_sources(text, relevant_chunks(retrieved)) if in_scope else [],
@@ -209,3 +241,5 @@ class RAG:
             in_scope=in_scope,
             cost=self.tracker.total - start,
         )
+        self.query_cache.set(key, asdict(answer))
+        return answer

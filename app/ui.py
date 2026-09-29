@@ -26,7 +26,8 @@ def build_ui(rag: RAG) -> gr.Blocks:
         except RuntimeError as e:
             return f"**Error:** {e}", "", "", rag.tracker.summary()
         retrieved = format_retrieved(answer.retrieved) if answer.retrieved else "_Nothing retrieved._"
-        cost = f"This query: ${answer.cost:.5f} · {rag.tracker.summary()}"
+        this_query = "cached, $0" if answer.cached else f"${answer.cost:.5f}"
+        cost = f"This query: {this_query} · {rag.tracker.summary()}"
         return answer.text, format_answer_sources(answer), retrieved, cost
 
     with gr.Blocks(title="EU AI Act RAG") as demo:

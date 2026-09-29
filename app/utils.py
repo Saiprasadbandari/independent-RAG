@@ -1,9 +1,11 @@
+import hashlib
 import json
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+CACHE_DIR = DATA_DIR / "cache"
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -12,10 +14,50 @@ CHUNK_OVERLAP = 200
 PRICES = {
     "text-embedding-3-small": {"input": 0.02, "output": 0.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "jev": {"input": 0.042, "output": 0.0},
 }
 BUDGET_USD = 5.0
 
 SENTENCE_END_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
+
+
+def normalize_query(query: str) -> str:
+    """'What is  high-risk AI?' and 'what is high-risk ai' share a cache entry."""
+    return re.sub(r"\s+", " ", query).strip().rstrip("?.! ").lower()
+
+
+def fingerprint(*parts) -> str:
+    return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+class DiskCache:
+    """JSON-backed key/value store that survives restarts.
+
+    `namespace` fingerprints whatever the cached values depend on (index contents,
+    model, prompt, top-k...). When it changes, the old entries are dropped so a
+    rebuilt index or edited prompt never serves stale results.
+    """
+
+    def __init__(self, path: Path, namespace: str):
+        self.path = path
+        self.namespace = namespace
+        self.entries = {}
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("namespace") == namespace:
+                self.entries = saved.get("entries", {})
+
+    def get(self, key: str):
+        return self.entries.get(key)
+
+    def set(self, key: str, value) -> None:
+        self.entries[key] = value
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"namespace": self.namespace, "entries": self.entries},
+                                        ensure_ascii=False), encoding="utf-8")
+
+    def __len__(self) -> int:
+        return len(self.entries)
 
 
 def split_sentences(text: str) -> list[str]:
