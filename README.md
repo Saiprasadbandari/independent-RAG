@@ -5,6 +5,7 @@ Team: ParisAI
 Members:
 - Rayyan Ahemad Mohd
 - Sai Prasad Bandari
+- Prodipta Paul
 
 
 ## What it does
