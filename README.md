@@ -69,3 +69,27 @@ similarity threshold) skip re-ranking and the LLM call.
   calls; the retrieval and re-rank caches skip the embedding and relevance calls when only the
   answer needs regenerating. All caches reset automatically when the index, models, prompts or
   thresholds change. Delete `data/cache/` to clear them by hand.
+
+## Reflection and evaluation
+
+- **Confidence per answer** (`app/reflection.py`): every answer gets a confidence score shown under
+  it in the UI, built from signals the pipeline already has, so it costs nothing extra: how
+  relevant the best passage is, how many passages passed the filters, whether the answer cited
+  the passages it was given, and how well the cited passages match the answer text (scored by the
+  local re-ranker). Truncated answers are capped below "high". For a refusal, the score is
+  confidence in the refusal: high when nothing relevant was found, low when a strong passage
+  existed.
+- **Evaluation** (`scripts/evaluate.py`): runs every question in `data/questions.json` and writes
+  `data/eval/report.md` and `data/eval/results.json`.
+
+  ```bash
+  python -m scripts.evaluate               # all questions
+  python -m scripts.evaluate --limit 5     # quick run
+  python -m scripts.evaluate --fresh       # ignore cached answers (costs API calls)
+  ```
+
+  The report covers retrieval quality (Hit@k, Recall@k, MRR, FAISS order vs re-ranked),
+  context recall, citation accuracy, refusal accuracy, token F1 against `expected_answer`,
+  results by category and sub-type, the priority questions, and which stage each failure came
+  from (retrieval, ranking or generation). Its calibration table shows whether each confidence
+  band is right as often as it claims; use it to tune the weights in `app/reflection.py`.

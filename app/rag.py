@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH
                            get_embeddings, load_corpus)
 from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
                        fingerprint, format_citation, normalize_query)
+from app.reflection import REFLECTION_VERSION, assess
 from app.rerank import load_reranker
 
 CHAT_MODEL = "gpt-4o-mini"
@@ -22,6 +24,17 @@ MIN_SCORE = 0.30
 # (relevance cut-off lives with each re-ranker in app/rerank.py)
 RERANK_CANDIDATES = 15
 NO_INFO = "I don't have information about that in the provided documents."
+TRUNCATED_NOTE = "\n\n*(Answer cut off at the length limit.)*"
+# bump when answer parsing changes so cached answers get re-parsed
+ANSWER_FORMAT_VERSION = 2
+
+# "[2]", "[1, 3]", "[2-4]" — brackets holding only passage numbers
+REF_BRACKET_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,]\s*\d+)*)\s*\]")
+# "[Source: EU AI Regulations.pdf, p. 9]" — the label from build_context, copied by the model
+SOURCE_LABEL_RE = re.compile(r"\[Source:\s*(.+?),\s*p\.\s*(\d+)\s*\]")
+REFUSAL_RE = re.compile(
+    r"\b(?:don't|do not|doesn't|does not|cannot|can't)\s+(?:have|contain|provide|include|find)\b"
+    r"[^.]*\binformation\b", re.IGNORECASE)
 
 SYSTEM_PROMPT = f"""You are a helpful assistant that answers questions about the EU AI Act.
 
@@ -132,7 +145,14 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
         ],
     )
     track_cost(resp, tracker=tracker)
-    return resp.choices[0].message.content.strip()
+    choice = resp.choices[0]
+    text = (choice.message.content or "").strip()
+    if not text:
+        # the model declined outright; newer models put the reason in .refusal, not .content
+        return getattr(choice.message, "refusal", None) or NO_INFO
+    if choice.finish_reason == "length":
+        text += TRUNCATED_NOTE
+    return text
 
 
 # ============================================================================
@@ -180,17 +200,47 @@ class Answer:
     in_scope: bool = True
     cost: float = 0.0
     cached: bool = False
+    truncated: bool = False
+    # the first context_size entries of `retrieved` are the passages the model was given
+    context_size: int = 0
+    confidence: float = 0.0
+    confidence_label: str = ""
+    confidence_signals: dict = field(default_factory=dict)
+    confidence_notes: list[str] = field(default_factory=list)
+
+
+def cited_refs(text: str, chunks: list[dict]) -> tuple[list[int], list[int]]:
+    """Passage numbers the answer cites, split into (valid, out of range)."""
+    refs = set()
+    for match in REF_BRACKET_RE.finditer(text):
+        for part in match.group(1).split(","):
+            ends = [int(n) for n in re.split(r"[-–]", part)]
+            refs.update(range(ends[0], ends[-1] + 1) if len(ends) == 2 else ends)
+    for source, page in SOURCE_LABEL_RE.findall(text):
+        refs.update(i for i, c in enumerate(chunks, 1)
+                    if c["source"] == source.strip() and c["page"] == int(page))
+    valid = sorted(r for r in refs if 1 <= r <= len(chunks))
+    return valid, sorted(refs - set(valid))
 
 
 def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
     """Only the passages the model actually cited, de-duplicated by document + page."""
     seen, sources = set(), []
-    for i, c in enumerate(chunks, 1):
+    for i in cited_refs(text, chunks)[0]:
+        c = chunks[i - 1]
         key = (c["source"], c["page"])
-        if f"[{i}]" in text and key not in seen:
+        if key not in seen:
             seen.add(key)
             sources.append({**c, "ref": i})
     return sources
+
+
+def is_refusal(text: str) -> bool:
+    """A reply that declines without citing anything. A partial answer that cites passages
+    and then says part of the question isn't covered still counts as an answer."""
+    if REF_BRACKET_RE.search(text) or SOURCE_LABEL_RE.search(text):
+        return False
+    return normalize_query(NO_INFO) in normalize_query(text) or bool(REFUSAL_RE.search(text))
 
 
 class RAG:
@@ -219,7 +269,7 @@ class RAG:
         self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
-            RERANK_CANDIDATES, reranker_id,
+            RERANK_CANDIDATES, reranker_id, ANSWER_FORMAT_VERSION, REFLECTION_VERSION,
         ))
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
@@ -265,14 +315,27 @@ class RAG:
             context = plausible[:self.top_k]
 
         text = generate_answer(question, context, self.client, self.tracker)
-        in_scope = NO_INFO not in text
+        truncated = text.endswith(TRUNCATED_NOTE)
+        in_scope = not is_refusal(text)
+        sources = cited_sources(text, context) if in_scope else []
+        retrieved = ranked + [c for c in candidates if c not in plausible]
+        confidence = assess(text, in_scope, truncated, context, retrieved, sources,
+                            cited_refs(text, context)[1], self.reranker)
         answer = Answer(
             question=question,
             text=text,
-            sources=cited_sources(text, context) if in_scope else [],
-            retrieved=ranked + [c for c in candidates if c not in plausible],
+            sources=sources,
+            retrieved=retrieved,
             in_scope=in_scope,
             cost=self.tracker.total - start,
+            truncated=truncated,
+            context_size=len(context),
+            confidence=confidence.score,
+            confidence_label=confidence.label,
+            confidence_signals=confidence.signals,
+            confidence_notes=confidence.notes,
         )
-        self.query_cache.set(key, asdict(answer))
+        # a cut-off answer isn't worth keeping; asking again might fit (e.g. after a prompt tweak)
+        if not truncated:
+            self.query_cache.set(key, asdict(answer))
         return answer

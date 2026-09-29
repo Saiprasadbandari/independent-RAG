@@ -11,24 +11,36 @@ EXAMPLES = [
 ]
 
 
+CONFIDENCE_ICONS = {"high": "🟢", "medium": "🟡", "low": "🔴"}
+
+
 def format_answer_sources(answer) -> str:
     if not answer.sources:
         return "_No sources cited._"
     return "\n".join(f"- **[{s['ref']}]** {format_citation(s)}" for s in answer.sources)
 
 
+def format_confidence(answer) -> str:
+    if not answer.confidence_label:
+        return ""
+    subject = "Answer" if answer.in_scope else "Refusal"
+    icon = CONFIDENCE_ICONS[answer.confidence_label]
+    notes = " · ".join(answer.confidence_notes)
+    return f"{icon} **{subject} confidence: {answer.confidence:.0%} ({answer.confidence_label})** — {notes}"
+
+
 def build_ui(rag: RAG) -> gr.Blocks:
     def respond(question: str):
         if not question or not question.strip():
-            return "Please enter a question.", "", "", rag.tracker.summary()
+            return "Please enter a question.", "", "", "", rag.tracker.summary()
         try:
             answer = rag.ask(question)
         except RuntimeError as e:
-            return f"**Error:** {e}", "", "", rag.tracker.summary()
+            return f"**Error:** {e}", "", "", "", rag.tracker.summary()
         retrieved = format_retrieved(answer.retrieved) if answer.retrieved else "_Nothing retrieved._"
         this_query = "cached, $0" if answer.cached else f"${answer.cost:.5f}"
         cost = f"This query: {this_query} · {rag.tracker.summary()}"
-        return answer.text, format_answer_sources(answer), retrieved, cost
+        return answer.text, format_confidence(answer), format_answer_sources(answer), retrieved, cost
 
     with gr.Blocks(title="EU AI Act RAG") as demo:
         gr.Markdown("# EU AI Act Assistant\nAsk questions about Regulation (EU) 2024/1689. "
@@ -40,6 +52,7 @@ def build_ui(rag: RAG) -> gr.Blocks:
             submit = gr.Button("Ask", variant="primary", scale=1)
 
         answer = gr.Markdown(label="Answer")
+        confidence = gr.Markdown()
         sources = gr.Markdown(label="Sources")
         with gr.Accordion("Retrieved passages", open=False):
             retrieved = gr.Markdown()
@@ -47,7 +60,7 @@ def build_ui(rag: RAG) -> gr.Blocks:
 
         gr.Examples(EXAMPLES, inputs=question)
 
-        outputs = [answer, sources, retrieved, cost]
+        outputs = [answer, confidence, sources, retrieved, cost]
         submit.click(respond, inputs=question, outputs=outputs)
         question.submit(respond, inputs=question, outputs=outputs)
 
