@@ -4,6 +4,7 @@ Run from the repo root, after the index is built:
     python -m scripts.evaluate               # every question
     python -m scripts.evaluate --limit 5     # quick run on the first 5
     python -m scripts.evaluate --fresh       # ignore cached answers (costs API calls)
+    python -m scripts.evaluate --mode hybrid # same run modes as app.main
 
 Writes data/eval/results.json (one row per question) and data/eval/report.md.
 
@@ -106,6 +107,8 @@ def evaluate_question(rag, question: dict, index: int) -> dict:
         "confidence_label": answer.confidence_label,
         "confidence_notes": answer.confidence_notes,
         "cost": answer.cost,
+        "input_tokens": answer.input_tokens,
+        "output_tokens": answer.output_tokens,
         "cached": answer.cached,
         "stage": failure_stage(answerable, answer, expected),
     }
@@ -151,6 +154,8 @@ def summarize(rows: list[dict]) -> dict:
         "answer_f1": avg(answerable, "answer_f1"),
         "truncated": sum(r["truncated"] for r in rows),
         "cost": sum(r["cost"] for r in rows),
+        "input_tokens": avg([r for r in rows if r["input_tokens"]], "input_tokens"),
+        "output_tokens": avg([r for r in rows if r["input_tokens"]], "output_tokens"),
         "retrieval": {
             order: {m: avg(answerable, f"retrieval_{order}", m)
                     for m in ["mrr"] + [f"{kind}@{k}" for kind in ("hit", "recall") for k in KS]}
@@ -218,6 +223,8 @@ def write_report(rows: list[dict], summary: dict, path: Path) -> None:
     ["cited an expected page", pct(s["citation_hit"])],
     ["answer token F1 vs expected_answer", num(s["answer_f1"])],
     ["answers cut off at max_tokens", s["truncated"]],
+    ["avg tokens per generated answer (in / out)",
+     "—" if s["input_tokens"] is None else f"{s['input_tokens']:.0f} / {s['output_tokens']:.0f}"],
 ])}
 
 ## Retrieval quality (answerable questions)
@@ -262,16 +269,16 @@ High confidence but wrong: {len(overconfident)} question(s){"" if not overconfid
     path.write_text(report, encoding="utf-8")
 
 
-def build_rag(cache_dir: Path | None):
+def build_rag(cache_dir: Path | None, mode: str = "api"):
     from dotenv import load_dotenv
-    from openai import OpenAI
 
     from app.embedding import Retriever, load_index
+    from app.local_models import make_client
     from app.rag import RAG
     from app.utils import CostTracker
 
     load_dotenv()
-    client = OpenAI()
+    client = make_client(mode)
     tracker = CostTracker()
     index, chunks = load_index()
     kwargs = {"cache_dir": cache_dir} if cache_dir else {}
@@ -297,13 +304,14 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate the RAG pipeline on data/questions.json")
     parser.add_argument("--limit", type=int, help="only the first N questions")
     parser.add_argument("--fresh", action="store_true", help="bypass cached answers (costs API calls)")
+    parser.add_argument("--mode", choices=("api", "hybrid", "local"), default="api")
     args = parser.parse_args()
 
     if not QUESTIONS_PATH.exists():
         raise SystemExit(f"{QUESTIONS_PATH} not found — get data/ from Teams.")
     questions = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))[:args.limit]
     with tempfile.TemporaryDirectory() as tmp:
-        rag = build_rag(Path(tmp) if args.fresh else None)
+        rag = build_rag(Path(tmp) if args.fresh else None, args.mode)
         summary = run(rag, questions)
 
     print(f"\ncorrect {pct(summary['correct'])} · context recall {pct(summary['context_recall'])} · "

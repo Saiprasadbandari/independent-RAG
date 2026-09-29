@@ -1,5 +1,6 @@
 import json
 import re
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from openai import OpenAI
 from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH, Retriever,
                            get_embeddings, load_corpus)
 from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
-                       fingerprint, format_citation, normalize_query)
+                       fingerprint, format_citation, normalize_query, split_sentences)
 from app.reflection import REFLECTION_VERSION, assess
 from app.rerank import load_reranker
 
@@ -40,6 +41,21 @@ CONDENSE_PROMPT = """Rewrite the user's latest question so it can be understood 
 Resolve references such as "it", "that", "the second requirement" using the conversation.
 Keep everything else as the user wrote it. If the question is already standalone, return it unchanged.
 Reply with the rewritten question only."""
+# only questions that look like follow-ups are rewritten, so a fresh question is never
+# bent towards the previous topic (and most questions skip the rewrite call entirely)
+FOLLOW_UP_RE = re.compile(
+    r"\b(?:it|its|that|this|these|those|they|them|their|such|same|above|previous|former|latter|"
+    r"first|second|third|last|other|another|else|also|what about|how about|and if)\b", re.IGNORECASE)
+
+# How the context is assembled when the local re-ranker is available. Everything here runs
+# on the local GPU and exists to send the API fewer, better tokens.
+CONTEXT_PASSAGES = 5          # at most this many ranked passages...
+RELATIVE_RELEVANCE = 0.4      # ...each scoring at least this fraction of the best one
+NEIGHBOUR_TOP = 2             # the best passages also pull in the chunks that follow them,
+NEIGHBOUR_STEPS = 6           # up to this far ahead: lists and articles cross chunk boundaries
+TRIM_MIN_CHARS = 400          # ranked passages longer than this are trimmed...
+SENTENCE_MIN_RELEVANCE = 0.1  # ...to the sentences scoring at least this
+
 # progress stages RAG.ask reports through on_stage, in order
 STAGES = ("rewriting", "searching", "reranking", "generating", "checking")
 
@@ -137,6 +153,13 @@ def build_context(chunks: list[dict]) -> str:
     return "\n\n".join(f"[{i}] [Source: {format_citation(c)}]\n{c['text']}" for i, c in enumerate(chunks, 1))
 
 
+def answer_messages(query: str, chunks: list[dict]) -> list[dict]:
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Context:\n{build_context(chunks)}\n\nQuestion: {query}"},
+    ]
+
+
 def generate_answer(query: str, retrieved_chunks: list[dict],
                     client: OpenAI | None = None, tracker: CostTracker | None = None) -> str:
     relevant = relevant_chunks(retrieved_chunks)
@@ -150,10 +173,7 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
         model=CHAT_MODEL,
         temperature=0,
         max_tokens=MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{build_context(relevant)}\n\nQuestion: {query}"},
-        ],
+        messages=answer_messages(query, relevant),
     )
     track_cost(resp, tracker=tracker)
     choice = resp.choices[0]
@@ -164,6 +184,48 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
     if choice.finish_reason == "length":
         text += TRUNCATED_NOTE
     return text
+
+
+def stream_answer(query: str, retrieved_chunks: list[dict],
+                  client: OpenAI | None = None, tracker: CostTracker | None = None):
+    """generate_answer, streamed: yields ("delta", text piece) as the model writes, then
+    ("done", text, truncated, input_tokens, output_tokens)."""
+    relevant = relevant_chunks(retrieved_chunks)
+    if not relevant:
+        yield "done", NO_INFO, False, 0, 0
+        return
+
+    client, tracker = client or get_client(), tracker or get_tracker()
+    tracker.check()
+    stream = client.chat.completions.create(
+        model=CHAT_MODEL,
+        temperature=0,
+        max_tokens=MAX_TOKENS,
+        messages=answer_messages(query, relevant),
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    pieces, refusal, finish, usage = [], None, None, None
+    for chunk in stream:
+        usage = chunk.usage or usage
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        if choice.delta.content:
+            pieces.append(choice.delta.content)
+            yield "delta", choice.delta.content
+        refusal = getattr(choice.delta, "refusal", None) or refusal
+        finish = choice.finish_reason or finish
+
+    input_tokens, output_tokens = (usage.prompt_tokens, usage.completion_tokens) if usage else (0, 0)
+    tracker.add(CHAT_MODEL, input_tokens, output_tokens)
+    text = "".join(pieces).strip() or refusal or NO_INFO
+    truncated = finish == "length"
+    yield "done", text + (TRUNCATED_NOTE if truncated else ""), truncated, input_tokens, output_tokens
+
+
+def looks_like_follow_up(question: str) -> bool:
+    return len(question.split()) <= 3 or bool(FOLLOW_UP_RE.search(question))
 
 
 def history_answer(answer: str) -> str:
@@ -250,6 +312,9 @@ class Answer:
     confidence_label: str = ""
     confidence_signals: dict = field(default_factory=dict)
     confidence_notes: list[str] = field(default_factory=list)
+    # tokens sent to / received from the answer model (0 for cached or local answers)
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 def cited_refs(text: str, chunks: list[dict]) -> tuple[list[int], list[int]]:
@@ -304,18 +369,23 @@ class RAG:
         self.top_k = top_k
         self.reranker = load_reranker()
         reranker_id = (self.reranker.name, self.reranker.min_relevance) if self.reranker else None
+        # local/hybrid clients (app/local_models.py) say which models they really run
+        embedding_id = getattr(client, "embedding_model", EMBEDDING_MODEL)
+        chat_id = getattr(client, "chat_model", CHAT_MODEL)
+        context_id = (CONTEXT_PASSAGES, RELATIVE_RELEVANCE, NEIGHBOUR_TOP, NEIGHBOUR_STEPS,
+                      TRIM_MIN_CHARS, SENTENCE_MIN_RELEVANCE)
 
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
-                                         fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES))
+                                         fingerprint(index_id, embedding_id, RERANK_CANDIDATES))
         self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
-            index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
-            RERANK_CANDIDATES, reranker_id, ANSWER_FORMAT_VERSION, REFLECTION_VERSION,
+            index_id, embedding_id, chat_id, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
+            RERANK_CANDIDATES, reranker_id, context_id, ANSWER_FORMAT_VERSION, REFLECTION_VERSION,
         ))
         self.rewrite_cache = DiskCache(cache_dir / "rewrites.json", fingerprint(
-            CHAT_MODEL, CONDENSE_PROMPT, HISTORY_TURNS, HISTORY_ANSWER_CHARS, REWRITE_MAX_TOKENS,
+            chat_id, CONDENSE_PROMPT, HISTORY_TURNS, HISTORY_ANSWER_CHARS, REWRITE_MAX_TOKENS,
         ))
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
@@ -341,6 +411,70 @@ class RAG:
         ranked = [{**c, "relevance": judged[str(c["id"])]} for c in candidates]
         return sorted(ranked, key=lambda c: c["relevance"], reverse=True)
 
+    def add_neighbours(self, question: str, context: list[dict]) -> list[dict]:
+        """After each of the best passages, add the chunks that follow it while they stay
+        relevant. A low-scoring chunk between two relevant ones is kept too (it's usually the
+        middle of the same list); two low ones in a row end the walk."""
+        chunks = self.retriever.chunks
+        have = {c["id"] for c in context}
+        ahead = {c["id"]: [i for i in range(c["id"] + 1, min(c["id"] + 1 + NEIGHBOUR_STEPS, len(chunks)))
+                           if chunks[i]["source"] == c["source"]]
+                 for c in context[:NEIGHBOUR_TOP]}
+        todo = sorted({i for ids in ahead.values() for i in ids} - have)
+        scores = dict(zip(todo, self.reranker.score(question, [chunks[i] for i in todo]))) if todo else {}
+
+        out = []
+        for c in context:
+            out.append(c)
+            pending, misses = [], 0
+            for i in ahead.get(c["id"], []):
+                if i in have:
+                    break
+                pending.append(i)
+                if scores[i] < self.reranker.min_relevance:
+                    misses += 1
+                    if misses == 2:
+                        break
+                    continue
+                # neighbours weren't FAISS results; they borrow the similarity of the passage they follow
+                out += [{**chunks[j], "score": c["score"], "relevance": scores[j], "neighbour_of": c["id"]}
+                        for j in pending]
+                have.update(pending)
+                pending, misses = [], 0
+        return out
+
+    def trim(self, question: str, context: list[dict]) -> list[dict]:
+        """Cut each long ranked passage down to its relevant sentences. Neighbours stay whole:
+        they're usually the rest of a list, and list items rarely repeat the question's words."""
+        sentences = {k: split_sentences(c["text"]) for k, c in enumerate(context)
+                     if "neighbour_of" not in c and len(c["text"]) > TRIM_MIN_CHARS}
+        sentences = {k: s for k, s in sentences.items() if len(s) > 2}
+        flat = [(k, j) for k, s in sentences.items() for j in range(len(s))]
+        if not flat:
+            return context
+        scores = defaultdict(dict)
+        for (k, j), score in zip(flat, self.reranker.score(question, [{"text": sentences[k][j]} for k, j in flat])):
+            scores[k][j] = score
+
+        out = list(context)
+        for k, sents in sentences.items():
+            keep = [j for j in range(len(sents)) if scores[k][j] >= SENTENCE_MIN_RELEVANCE]
+            keep = keep or sorted(sorted(range(len(sents)), key=lambda j: -scores[k][j])[:2])
+            if len(keep) == len(sents):
+                continue
+            text = sents[keep[0]]
+            for prev, j in zip(keep, keep[1:]):
+                text += (" " if j == prev + 1 else " … ") + sents[j]
+            out[k] = {**context[k], "text": text, "trimmed": True}
+        return out
+
+    def select_context(self, question: str, ranked: list[dict]) -> list[dict]:
+        if not ranked:
+            return []
+        floor = max(self.reranker.min_relevance, RELATIVE_RELEVANCE * ranked[0]["relevance"])
+        best = [c for c in ranked if c["relevance"] >= floor][:CONTEXT_PASSAGES]
+        return self.trim(question, self.add_neighbours(question, best))
+
     def condense(self, question: str, history: list[tuple[str, str]]) -> str:
         key = fingerprint(history[-HISTORY_TURNS:], normalize_query(question))
         hit = self.rewrite_cache.get(key)
@@ -358,39 +492,59 @@ class RAG:
         requirement?" work. on_stage: called with each name in STAGES as the pipeline reaches it.
         """
         stage = on_stage or (lambda name: None)
+        for kind, value in self.ask_stream(question, history):
+            if kind == "stage":
+                stage(value)
+            elif kind == "answer":
+                return value
+
+    def ask_stream(self, question: str, history: list[tuple[str, str]] | None = None):
+        """ask(), as events: ("stage", name), ("delta", answer text so far), and finally
+        ("answer", Answer)."""
         question = question.strip()
         start = self.tracker.total
 
         standalone = question
-        if history:
-            stage("rewriting")
+        if history and looks_like_follow_up(question):
+            yield "stage", "rewriting"
             standalone = self.condense(question, history)
 
         key = normalize_query(standalone)
         hit = self.query_cache.get(key)
         if hit is not None:
-            return Answer(**{**hit, "question": question, "standalone_question": standalone,
-                             "cost": self.tracker.total - start, "cached": True})
+            yield "answer", Answer(**{**hit, "question": question, "standalone_question": standalone,
+                                      "cost": self.tracker.total - start, "cached": True})
+            return
 
-        stage("searching")
+        yield "stage", "searching"
         candidates = self.retrieve(standalone)
         # only re-rank passages that are at least loosely similar; off-topic stops here
         plausible = relevant_chunks(candidates)
         if self.reranker and plausible:
-            stage("reranking")
+            yield "stage", "reranking"
             ranked = self.rerank(standalone, plausible)
-            context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
+            context = self.select_context(standalone, ranked)
         else:
             ranked = plausible
             context = plausible[:self.top_k]
 
-        stage("generating")
-        text = generate_answer(standalone, context, self.client, self.tracker)
-        stage("checking")
-        truncated = text.endswith(TRUNCATED_NOTE)
+        yield "stage", "generating"
+        so_far = ""
+        for event in stream_answer(standalone, context, self.client, self.tracker):
+            if event[0] == "delta":
+                so_far += event[1]
+                yield "delta", so_far
+            else:
+                _, text, truncated, input_tokens, output_tokens = event
+        yield "stage", "checking"
         in_scope = not is_refusal(text)
         sources = cited_sources(text, context) if in_scope else []
-        retrieved = ranked + [c for c in candidates if c not in plausible]
+        # the passages the model saw first, then every other candidate once
+        retrieved, seen = list(context), {c["id"] for c in context}
+        for c in ranked + candidates:
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                retrieved.append(c)
         confidence = assess(text, in_scope, truncated, context, retrieved, sources,
                             cited_refs(text, context)[1], self.reranker)
         answer = Answer(
@@ -407,8 +561,10 @@ class RAG:
             confidence_label=confidence.label,
             confidence_signals=confidence.signals,
             confidence_notes=confidence.notes,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
         # a cut-off answer isn't worth keeping; asking again might fit (e.g. after a prompt tweak)
         if not truncated:
             self.query_cache.set(key, asdict(answer))
-        return answer
+        yield "answer", answer

@@ -94,6 +94,41 @@ similarity threshold) skip re-ranking and the LLM call.
   from (retrieval, ranking or generation). Its calibration table shows whether each confidence
   band is right as often as it claims; use it to tune the weights in `app/reflection.py`.
 
+## Run modes
+
+`python -m app.main --mode <mode>` (also `scripts.evaluate --mode`) picks where each step runs:
+
+| mode | embeddings | answers | needs API key | cost per new question |
+|---|---|---|---|---|
+| `api` (default) | text-embedding-3-small | gpt-4o-mini | yes | ~$0.0002 |
+| `hybrid` | `BAAI/bge-base-en-v1.5` on your GPU | gpt-4o-mini | yes | ~$0.0002 |
+| `local` | `BAAI/bge-base-en-v1.5` on your GPU | `Qwen/Qwen2.5-3B-Instruct` on your GPU | no | $0 |
+
+Re-ranking and passage trimming run on your GPU in every mode, and answers stream in every
+mode. `api` and `hybrid` cost about the same per question (embedding a question is ~$0.0000004;
+the answer is the real cost); `hybrid` makes building the index free and keeps retrieval
+working without the API. The per-question saving comes from the prompt trimming below. `local` works offline but is slower (~10 s before the answer starts on an M4)
+and the small model follows the citation instructions less reliably. The local models download
+from Hugging Face on first use (~0.4 GB embeddings, ~6 GB chat model). Local embeddings get their
+own index (`data/my_index-local.faiss`), so switching modes never mixes vectors of different sizes.
+
+### Keeping the answer prompt small
+
+Input tokens are most of the cost, so the context is assembled on the GPU before anything is sent:
+
+- at most 5 re-ranked passages, each scoring at least 40% of the best one
+- the chunks following the 2 best passages are added while they stay relevant, so lists and
+  articles that cross a chunk boundary arrive complete
+- other long passages are trimmed to their relevant sentences (✂️ in the sources panel)
+
+On 8 test questions this sent 29% fewer tokens than sending the 8 best passages whole, with the
+answer still in context every time; list questions get more complete (Article 5's list of
+prohibited practices went from 1 item in context to most of them).
+
+Follow-up questions are only rewritten when they look like follow-ups ("it", "that",
+"what about…", very short questions), which skips that call for most questions and stops a new
+question from being bent towards the previous topic.
+
 ## Using the app
 
 - **Follow-up questions**: the chat remembers the conversation. A follow-up such as "what about
@@ -106,7 +141,7 @@ similarity threshold) skip re-ranking and the LLM call.
   "Other retrieved candidates".
 - **Feedback**: 👍/👎 under each answer is logged to `data/feedback.jsonl` with the question, the
   answer, its confidence, and the cited and context pages.
-- **Progress**: while an answer is being prepared the chat shows the current stage (understanding
-  the follow-up, embedding and searching, re-ranking, generating, checking confidence).
+- **Progress and streaming**: the reply shows the current stage (understanding the follow-up,
+  searching, re-ranking and trimming, writing), then the answer streams in as it's written.
 - **Export**: download the whole conversation or one answer (click it first; the latest answer
   otherwise) as .txt or .pdf.
