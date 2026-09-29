@@ -58,17 +58,13 @@ similarity threshold) skip re-ranking and the LLM call.
 
 ## Re-ranking and caching
 
-- **Re-ranking** (`app/rerank.py`): FAISS pulls 15 candidates, then each one gets a relevance
-  probability from 0 to 1 for "does this passage help answer the question?" (the same idea as
-  TypeSafe's Jev: a decision, not generated text). Passages above the cut-off are kept, best 8
-  go to the answer prompt.
-  - **Local (default, free):** the `BAAI/bge-reranker-base` cross-encoder runs on your GPU
-    (Apple Silicon via MPS, NVIDIA via CUDA, CPU otherwise). The model (~1.1 GB) downloads from
-    Hugging Face on first start; after that it loads in ~10 s and scores a question in under a
-    second. Cut-off: 0.1.
-  - **API fallback:** if `sentence-transformers` isn't installed, gpt-4o-mini makes a one-token
-    yes/no decision per passage and P(yes) is read from its logprobs. Costs ~$0.0007 per
-    question. Cut-off: 0.5.
+- **Re-ranking** (`app/rerank.py`): FAISS pulls 15 candidates, then the `BAAI/bge-reranker-base`
+  cross-encoder scores each one from 0 to 1 for how well it answers the question. Passages
+  scoring at least 0.1 are kept, best 8 go to the answer prompt. It runs on your GPU (Apple
+  Silicon via MPS, NVIDIA via CUDA, CPU otherwise) with no API calls. The model (~1.1 GB)
+  downloads from Hugging Face on first start; after that it loads in ~10 s and scores a question
+  in under a second. Without `sentence-transformers` installed, re-ranking is skipped and FAISS
+  order is used.
 - **Caches** (`data/cache/`): repeated questions are answered from the query cache with no API
   calls; the retrieval and re-rank caches skip the embedding and relevance calls when only the
   answer needs regenerating. All caches reset automatically when the index, models, prompts or

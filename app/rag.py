@@ -209,17 +209,17 @@ class RAG:
         self.retriever = retriever
         self.tracker = tracker
         self.top_k = top_k
-        self.reranker = load_reranker(client, tracker)
+        self.reranker = load_reranker()
+        reranker_id = (self.reranker.name, self.reranker.min_relevance) if self.reranker else None
 
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
                                          fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES))
-        self.rerank_cache = DiskCache(cache_dir / "rerank.json",
-                                      fingerprint(index_id, self.reranker.name))
+        self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
-            RERANK_CANDIDATES, self.reranker.name, self.reranker.min_relevance,
+            RERANK_CANDIDATES, reranker_id,
         ))
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
@@ -234,7 +234,7 @@ class RAG:
         return retrieved
 
     def rerank(self, question: str, candidates: list[dict]) -> list[dict]:
-        """Candidates with a "relevance" P(yes) attached, most relevant first."""
+        """Candidates with a "relevance" score attached, most relevant first."""
         key = normalize_query(question)
         judged = dict(self.rerank_cache.get(key) or {})
         unjudged = [c for c in candidates if str(c["id"]) not in judged]
@@ -255,10 +255,14 @@ class RAG:
 
         start = self.tracker.total
         candidates = self.retrieve(question)
-        # only pay to re-rank passages that are at least loosely similar; off-topic stops here
+        # only re-rank passages that are at least loosely similar; off-topic stops here
         plausible = relevant_chunks(candidates)
-        ranked = self.rerank(question, plausible) if plausible else []
-        context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
+        if self.reranker and plausible:
+            ranked = self.rerank(question, plausible)
+            context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
+        else:
+            ranked = plausible
+            context = plausible[:self.top_k]
 
         text = generate_answer(question, context, self.client, self.tracker)
         in_scope = NO_INFO not in text
