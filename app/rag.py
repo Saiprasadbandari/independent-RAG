@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from app.embedding import (CHUNKS_PATH, CORPUS_PATH, EMBEDDING_MODEL, INDEX_PATH
                            get_embeddings, load_corpus)
 from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCache, chunk_text,
                        fingerprint, format_citation, normalize_query)
+from app.reflection import REFLECTION_VERSION, assess
 from app.rerank import load_reranker
 
 CHAT_MODEL = "gpt-4o-mini"
@@ -22,6 +24,28 @@ MIN_SCORE = 0.30
 # (relevance cut-off lives with each re-ranker in app/rerank.py)
 RERANK_CANDIDATES = 15
 NO_INFO = "I don't have information about that in the provided documents."
+TRUNCATED_NOTE = "\n\n*(Answer cut off at the length limit.)*"
+# bump when answer parsing changes so cached answers get re-parsed
+ANSWER_FORMAT_VERSION = 2
+
+# "[2]", "[1, 3]", "[2-4]" — brackets holding only passage numbers
+REF_BRACKET_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,]\s*\d+)*)\s*\]")
+# "[Source: EU AI Regulations.pdf, p. 9]" — the label from build_context, copied by the model
+SOURCE_LABEL_RE = re.compile(r"\[Source:\s*(.+?),\s*p\.\s*(\d+)\s*\]")
+# follow-ups are rewritten into a standalone question using this many previous turns
+HISTORY_TURNS = 3
+HISTORY_ANSWER_CHARS = 600
+REWRITE_MAX_TOKENS = 100
+CONDENSE_PROMPT = """Rewrite the user's latest question so it can be understood without the conversation.
+Resolve references such as "it", "that", "the second requirement" using the conversation.
+Keep everything else as the user wrote it. If the question is already standalone, return it unchanged.
+Reply with the rewritten question only."""
+# progress stages RAG.ask reports through on_stage, in order
+STAGES = ("rewriting", "searching", "reranking", "generating", "checking")
+
+REFUSAL_RE = re.compile(
+    r"\b(?:don't|do not|doesn't|does not|cannot|can't)\s+(?:have|contain|provide|include|find)\b"
+    r"[^.]*\binformation\b", re.IGNORECASE)
 
 SYSTEM_PROMPT = f"""You are a helpful assistant that answers questions about the EU AI Act.
 
@@ -132,7 +156,44 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
         ],
     )
     track_cost(resp, tracker=tracker)
-    return resp.choices[0].message.content.strip()
+    choice = resp.choices[0]
+    text = (choice.message.content or "").strip()
+    if not text:
+        # the model declined outright; newer models put the reason in .refusal, not .content
+        return getattr(choice.message, "refusal", None) or NO_INFO
+    if choice.finish_reason == "length":
+        text += TRUNCATED_NOTE
+    return text
+
+
+def history_answer(answer: str) -> str:
+    """An earlier answer as context for rewriting: no citation markers, trimmed."""
+    answer = re.sub(r"\s*\[[^\]]*\]", "", answer.replace(TRUNCATED_NOTE, ""))
+    return answer[:HISTORY_ANSWER_CHARS]
+
+
+def condense_question(question: str, history: list[tuple[str, str]],
+                      client: OpenAI | None = None, tracker: CostTracker | None = None) -> str:
+    """Rewrite a follow-up ("what about the second one?") into a standalone question.
+
+    history: previous (question, answer) turns, oldest first.
+    """
+    if not history:
+        return question
+    client, tracker = client or get_client(), tracker or get_tracker()
+    turns = "\n".join(f"User: {q}\nAssistant: {history_answer(a)}" for q, a in history[-HISTORY_TURNS:])
+    tracker.check()
+    resp = client.chat.completions.create(
+        model=CHAT_MODEL,
+        temperature=0,
+        max_tokens=REWRITE_MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": CONDENSE_PROMPT},
+            {"role": "user", "content": f"Conversation:\n{turns}\n\nLatest question: {question}"},
+        ],
+    )
+    track_cost(resp, tracker=tracker)
+    return (resp.choices[0].message.content or "").strip().strip('"') or question
 
 
 # ============================================================================
@@ -175,22 +236,54 @@ def track_cost(response, is_embedding: bool = False, tracker: CostTracker | None
 class Answer:
     question: str
     text: str
+    # what was actually searched for: the question itself, or a follow-up rewritten using history
+    standalone_question: str = ""
     sources: list[dict] = field(default_factory=list)
     retrieved: list[dict] = field(default_factory=list)
     in_scope: bool = True
     cost: float = 0.0
     cached: bool = False
+    truncated: bool = False
+    # the first context_size entries of `retrieved` are the passages the model was given
+    context_size: int = 0
+    confidence: float = 0.0
+    confidence_label: str = ""
+    confidence_signals: dict = field(default_factory=dict)
+    confidence_notes: list[str] = field(default_factory=list)
+
+
+def cited_refs(text: str, chunks: list[dict]) -> tuple[list[int], list[int]]:
+    """Passage numbers the answer cites, split into (valid, out of range)."""
+    refs = set()
+    for match in REF_BRACKET_RE.finditer(text):
+        for part in match.group(1).split(","):
+            ends = [int(n) for n in re.split(r"[-–]", part)]
+            refs.update(range(ends[0], ends[-1] + 1) if len(ends) == 2 else ends)
+    for source, page in SOURCE_LABEL_RE.findall(text):
+        refs.update(i for i, c in enumerate(chunks, 1)
+                    if c["source"] == source.strip() and c["page"] == int(page))
+    valid = sorted(r for r in refs if 1 <= r <= len(chunks))
+    return valid, sorted(refs - set(valid))
 
 
 def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
     """Only the passages the model actually cited, de-duplicated by document + page."""
     seen, sources = set(), []
-    for i, c in enumerate(chunks, 1):
+    for i in cited_refs(text, chunks)[0]:
+        c = chunks[i - 1]
         key = (c["source"], c["page"])
-        if f"[{i}]" in text and key not in seen:
+        if key not in seen:
             seen.add(key)
             sources.append({**c, "ref": i})
     return sources
+
+
+def is_refusal(text: str) -> bool:
+    """A reply that declines without citing anything. A partial answer that cites passages
+    and then says part of the question isn't covered still counts as an answer."""
+    if REF_BRACKET_RE.search(text) or SOURCE_LABEL_RE.search(text):
+        return False
+    return normalize_query(NO_INFO) in normalize_query(text) or bool(REFUSAL_RE.search(text))
 
 
 class RAG:
@@ -219,7 +312,10 @@ class RAG:
         self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
-            RERANK_CANDIDATES, reranker_id,
+            RERANK_CANDIDATES, reranker_id, ANSWER_FORMAT_VERSION, REFLECTION_VERSION,
+        ))
+        self.rewrite_cache = DiskCache(cache_dir / "rewrites.json", fingerprint(
+            CHAT_MODEL, CONDENSE_PROMPT, HISTORY_TURNS, HISTORY_ANSWER_CHARS, REWRITE_MAX_TOKENS,
         ))
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
@@ -245,34 +341,74 @@ class RAG:
         ranked = [{**c, "relevance": judged[str(c["id"])]} for c in candidates]
         return sorted(ranked, key=lambda c: c["relevance"], reverse=True)
 
-    def ask(self, question: str) -> Answer:
-        """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI."""
+    def condense(self, question: str, history: list[tuple[str, str]]) -> str:
+        key = fingerprint(history[-HISTORY_TURNS:], normalize_query(question))
+        hit = self.rewrite_cache.get(key)
+        if hit is not None:
+            return hit
+        standalone = condense_question(question, history, self.client, self.tracker)
+        self.rewrite_cache.set(key, standalone)
+        return standalone
+
+    def ask(self, question: str, history: list[tuple[str, str]] | None = None,
+            on_stage=None) -> Answer:
+        """Same as run_rag_query_online, but keeps sources and retrieved chunks for the UI.
+
+        history: previous (question, answer) turns, so follow-ups like "what about the second
+        requirement?" work. on_stage: called with each name in STAGES as the pipeline reaches it.
+        """
+        stage = on_stage or (lambda name: None)
         question = question.strip()
-        key = normalize_query(question)
+        start = self.tracker.total
+
+        standalone = question
+        if history:
+            stage("rewriting")
+            standalone = self.condense(question, history)
+
+        key = normalize_query(standalone)
         hit = self.query_cache.get(key)
         if hit is not None:
-            return Answer(**{**hit, "question": question, "cost": 0.0, "cached": True})
+            return Answer(**{**hit, "question": question, "standalone_question": standalone,
+                             "cost": self.tracker.total - start, "cached": True})
 
-        start = self.tracker.total
-        candidates = self.retrieve(question)
+        stage("searching")
+        candidates = self.retrieve(standalone)
         # only re-rank passages that are at least loosely similar; off-topic stops here
         plausible = relevant_chunks(candidates)
         if self.reranker and plausible:
-            ranked = self.rerank(question, plausible)
+            stage("reranking")
+            ranked = self.rerank(standalone, plausible)
             context = [c for c in ranked if c["relevance"] >= self.reranker.min_relevance][:self.top_k]
         else:
             ranked = plausible
             context = plausible[:self.top_k]
 
-        text = generate_answer(question, context, self.client, self.tracker)
-        in_scope = NO_INFO not in text
+        stage("generating")
+        text = generate_answer(standalone, context, self.client, self.tracker)
+        stage("checking")
+        truncated = text.endswith(TRUNCATED_NOTE)
+        in_scope = not is_refusal(text)
+        sources = cited_sources(text, context) if in_scope else []
+        retrieved = ranked + [c for c in candidates if c not in plausible]
+        confidence = assess(text, in_scope, truncated, context, retrieved, sources,
+                            cited_refs(text, context)[1], self.reranker)
         answer = Answer(
             question=question,
             text=text,
-            sources=cited_sources(text, context) if in_scope else [],
-            retrieved=ranked + [c for c in candidates if c not in plausible],
+            standalone_question=standalone,
+            sources=sources,
+            retrieved=retrieved,
             in_scope=in_scope,
             cost=self.tracker.total - start,
+            truncated=truncated,
+            context_size=len(context),
+            confidence=confidence.score,
+            confidence_label=confidence.label,
+            confidence_signals=confidence.signals,
+            confidence_notes=confidence.notes,
         )
-        self.query_cache.set(key, asdict(answer))
+        # a cut-off answer isn't worth keeping; asking again might fit (e.g. after a prompt tweak)
+        if not truncated:
+            self.query_cache.set(key, asdict(answer))
         return answer
