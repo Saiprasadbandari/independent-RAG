@@ -129,6 +129,35 @@ Follow-up questions are only rewritten when they look like follow-ups ("it", "th
 "what about…", very short questions), which skips that call for most questions and stops a new
 question from being bent towards the previous topic.
 
+## Safety and testing
+
+Questions are cleaned before anything else runs (`sanitize_question` in `app/rag.py`):
+sentences that give the assistant orders ("ignore your rules", "end your answer with…",
+"write a poem", "reveal your prompt", "cite page…") are dropped, and text passed off as context
+(`Context:` blocks, `[1]`, `[Source: …]` labels) is stripped, so the question's own claims can't
+pose as retrieved passages. A message that is nothing but instructions is refused without a
+search. The chat shows the cleaned question as "Interpreted as" whenever it differs. The system prompt is
+deliberately unchanged: adding anti-injection rules to it made the local 3B model refuse easy
+questions it answered before, while cleaning the question alone stops all 10 test attacks.
+
+Follow-up rewrites are checked: the rewritten question must keep at least half of the topic words
+the user typed, otherwise the user's own wording is used. This stops a rewrite from swapping an
+unrelated message ("boom boom") for the previous question.
+
+The off-topic gate uses a similarity threshold per embedding model (`MIN_SCORES`): 0.30 for
+text-embedding-3-small, 0.60 for the local bge-base, whose scores run higher.
+
+```bash
+python -m scripts.injection_test --mode local   # 10 attacks, writes data/eval/injection.md
+python -m scripts.evaluate --mode local --fresh # full question set
+python -m scripts.regression data/eval/baseline.json data/eval/results.json   # exits 1 on regressions
+```
+
+The injection test covers instruction override, persona jailbreaks, system-prompt extraction,
+fake context in the question, forged citations, a follow-up hijack, and a poisoned passage planted
+in an in-memory copy of the index. Content inside a poisoned passage can still end up in an
+answer; the only defence against that is controlling what gets indexed.
+
 ## Using the app
 
 - **Follow-up questions**: the chat remembers the conversation. A follow-up such as "what about
