@@ -1,0 +1,15 @@
+# Failure Log
+
+Documented failures found during systematic testing against `data/questions.json`, and the fixes applied. Updated as we iterate — see the [Evaluation toolkit](../instructions/6_evaluation_toolkit.md) (or `scripts/retrieval_checker.py` / `scripts/eval_runner.py`) for how these are found.
+
+| Question | Category | Retrieval OK? | Problem | Fix applied | Fixed? |
+|----------|----------|:---:|---------|-------------|:---:|
+| "What is the maximum fine for a provider's non-compliance with high-risk AI system obligations other than the Article 5 prohibitions?" | factual (priority) | ❌ | The correct chunk (Article 99(4), page 115) ranked 6th–7th in FAISS similarity — outside the old `TOP_K=5` cutoff. Several nearby-but-wrong passages about Article 100/101 (different fine tiers) and Article 20 (corrective actions) scored higher, since the corpus has multiple semantically-similar "administrative fine" passages that crowd each other out. | Raised `TOP_K` from 5 to 8 in `app/rag.py`. | ✅ |
+| "If an AI system is classified as high-risk under Article 6, what is the maximum fine its provider risks for failing to meet the resulting obligations?" | cross-reference | ❌ | Same root cause as above — this question also depends on retrieving the Article 99(4) fine passage. | Same fix (`TOP_K` 5→8) resolved both. | ✅ |
+| "Which users of an AI system are completely exempt from the AI Act's deployer obligations?" | stress-test (negation) | ❌ | Retrieval consistently returns the *positive* case (Article 26, deployer obligations themselves, pages 67-68) instead of the narrow exemption clause (Article 2(10), page 46). This is the exact failure mode negation questions are designed to expose. | Not yet fixed — a known, hard limitation of pure embedding search on negation. Candidate fix: hybrid search (BM25) helps surface the exact term "personal non-professional activity", or a dedicated negation-aware prompt/rewrite step. | ❌ |
+| "What kind of AI model is explicitly NOT covered by the Article 3 definition of a 'general-purpose AI model'?" | stress-test (negation) | ❌ | Same pattern — retrieves recitals discussing GPAI models generally (pages 26, 30) instead of the precise exclusion clause in Article 3(63) (page 50). | Not yet fixed, same negation limitation as above. | ❌ |
+| "How many categories of criminal offences are listed in Annex II?" | factual | ❌ | Annex II is a bare list of offence names with no explicit count anywhere in the text ("16" never appears) — embedding search has nothing numeric to match a "how many" question against. | Not yet fixed. Likely needs the answer to be computed (count list items programmatically) rather than retrieved, which is out of scope for pure RAG — a good candidate for the agent's `quote_exact` + a counting step. | ❌ |
+
+## How this maps to the eval runner
+
+Run `python -m scripts.eval_runner` (retrieval-only mode is fastest for checking regressions) and cross-reference any `recall@5 = 0` rows against this log — if it's not here yet, add it.

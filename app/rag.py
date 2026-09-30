@@ -13,6 +13,7 @@ from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCa
                        fingerprint, format_citation, normalize_query)
 from app.reflection import REFLECTION_VERSION, assess
 from app.rerank import load_reranker
+from app.hybrid import BM25Index, reciprocal_rank_fusion
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
@@ -23,6 +24,11 @@ MIN_SCORE = 0.30
 # FAISS pulls this many candidates; the re-ranker keeps the best TOP_K of them
 # (relevance cut-off lives with each re-ranker in app/rerank.py)
 RERANK_CANDIDATES = 15
+# hybrid search: merge FAISS with BM25 keyword search via RRF before re-ranking.
+# Our corpus is a legal text full of exact terms (article numbers, "Annex III", etc.)
+# that pure vector search can miss — see the "exact_term" stress-test category.
+USE_BM25 = True
+BM25_CANDIDATES = 15
 NO_INFO = "I don't have information about that in the provided documents."
 TRUNCATED_NOTE = "\n\n*(Answer cut off at the length limit.)*"
 # bump when answer parsing changes so cached answers get re-parsed
@@ -304,11 +310,13 @@ class RAG:
         self.top_k = top_k
         self.reranker = load_reranker()
         reranker_id = (self.reranker.name, self.reranker.min_relevance) if self.reranker else None
+        self.bm25 = BM25Index(retriever.chunks) if USE_BM25 else None
 
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
-                                         fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES))
+                                         fingerprint(index_id, EMBEDDING_MODEL, RERANK_CANDIDATES,
+                                                     USE_BM25, BM25_CANDIDATES))
         self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, EMBEDDING_MODEL, CHAT_MODEL, SYSTEM_PROMPT, top_k, MIN_SCORE, MAX_TOKENS,
@@ -325,7 +333,18 @@ class RAG:
         hit = self.retrieval_cache.get(key)
         if hit is not None:
             return [{**self.retriever.chunks[i], "score": s} for i, s in hit]
-        retrieved = self.retriever.search(question, k=RERANK_CANDIDATES)
+
+        vector_hits = self.retriever.search(question, k=RERANK_CANDIDATES)
+        if self.bm25:
+            keyword_hits = self.bm25.search(question, k=BM25_CANDIDATES)
+            retrieved = reciprocal_rank_fusion(vector_hits, keyword_hits)
+            # a BM25-only hit has no cosine "score" — a keyword match is itself a real
+            # relevance signal, so let it clear the pre-rerank MIN_SCORE filter too
+            for c in retrieved:
+                c.setdefault("score", MIN_SCORE)
+        else:
+            retrieved = vector_hits
+
         self.retrieval_cache.set(key, [[c["id"], c["score"]] for c in retrieved])
         return retrieved
 

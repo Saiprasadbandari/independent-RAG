@@ -57,8 +57,14 @@ reaches $5. Embedding the full corpus costs well under $0.01; a new question cos
 $0.0004 (re-ranking runs locally for free). Off-topic questions (no passage above the
 similarity threshold) skip re-ranking and the LLM call.
 
-## Re-ranking and caching
+## Hybrid search, re-ranking and caching
 
+- **Hybrid search** (`app/hybrid.py`): our corpus is a legal text full of exact terms (article
+  numbers, "Annex III", defined terms) that pure vector search can miss — the `exact_term`
+  stress-test category in `data/questions.json` targets exactly this. FAISS (semantic) and BM25
+  (keyword) each retrieve their own top-15 candidates, merged by Reciprocal Rank Fusion (rank
+  position, not raw score — FAISS cosine and BM25 scores live on different scales). Runs entirely
+  locally, no API calls. Toggle with `USE_BM25` in `app/rag.py`.
 - **Re-ranking** (`app/rerank.py`): FAISS pulls 15 candidates, then the `BAAI/bge-reranker-base`
   cross-encoder scores each one from 0 to 1 for how well it answers the question. Passages
   scoring at least 0.1 are kept, best 8 go to the answer prompt. It runs on your GPU (Apple
