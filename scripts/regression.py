@@ -1,8 +1,8 @@
 """Compare two evaluation runs and flag regressions.
 
-    python -m scripts.regression data/eval/baseline.json data/eval/results.json
+    uv run python -m scripts.regression data/eval/baseline.json data/eval_results.json
 
-Both files come from scripts/evaluate.py. Questions are matched by their text. Prints the
+Both files come from scripts/eval_runner.py (retrieval-only or full). Questions are matched by their text. Prints the
 headline metrics side by side, then every question whose result changed: "fixed" (wrong
 before, right now), "regressed" (right before, wrong now) and "moved" (still wrong, but
 failing at a different stage). Writes data/eval/regression.md and exits with status 1 when
@@ -19,16 +19,17 @@ from app.utils import DATA_DIR
 OUT_PATH = DATA_DIR / "eval" / "regression.md"
 # (label, path into the summary, higher is better, format)
 METRICS = [
-    ("correct", ("correct",), True, "pct"),
-    ("context recall", ("context_recall",), True, "pct"),
-    ("cited an expected page", ("citation_hit",), True, "pct"),
-    ("citation precision", ("citation_precision",), True, "pct"),
+    ("correct (automatic)", ("correct",), True, "pct"),
+    ("recall@1", ("retrieval", "recall@1"), True, "pct"),
+    ("recall@3", ("retrieval", "recall@3"), True, "pct"),
+    ("recall@5", ("retrieval", "recall@5"), True, "pct"),
+    ("MRR", ("retrieval", "mrr"), True, "num"),
+    ("expected page sent to the model", ("context_recall",), True, "pct"),
     ("refusal accuracy", ("refusal_accuracy",), True, "pct"),
-    ("false refusals", ("false_refusal_rate",), False, "pct"),
+    ("wrong refusals", ("false_refusal_rate",), False, "pct"),
+    ("cited an expected page", ("citation_hit",), True, "pct"),
     ("answer F1", ("answer_f1",), True, "num"),
-    ("MRR (final order)", ("retrieval", "final", "mrr"), True, "num"),
-    ("hit@1 (final order)", ("retrieval", "final", "hit@1"), True, "pct"),
-    ("hit@8 (final order)", ("retrieval", "final", "hit@8"), True, "pct"),
+    ("avg latency (s)", ("latency_s",), False, "num"),
     ("avg input tokens", ("input_tokens",), False, "int"),
 ]
 
@@ -125,7 +126,7 @@ Baseline: `{names[0]}` · Candidate: `{names[1]}`
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare two scripts/evaluate.py result files")
+    parser = argparse.ArgumentParser(description="Compare two scripts/eval_runner.py result files")
     parser.add_argument("baseline", type=Path)
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--out", type=Path, default=OUT_PATH)

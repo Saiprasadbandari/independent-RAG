@@ -1,6 +1,6 @@
 # Failure Log
 
-Documented failures found during systematic testing against `data/questions.json`, and the fixes applied. Updated as we iterate — see the course's [Evaluation toolkit](https://github.com/EPITA-courses/GenAI_week/blob/main/instructions/6_evaluation_toolkit.md) and `scripts/retrieval_checker.py` / `scripts/evaluate.py` for how these are found.
+Documented failures found during systematic testing against `data/questions.json`, and the fixes applied. Updated as we iterate — see the course's [Evaluation toolkit](https://github.com/EPITA-courses/GenAI_week/blob/main/instructions/6_evaluation_toolkit.md) and `scripts/retrieval_checker.py` / `scripts/eval_runner.py` for how these are found.
 
 | Question | Category | Retrieval OK? | Problem | Fix applied | Fixed? |
 |----------|----------|:---:|---------|-------------|:---:|
@@ -12,14 +12,15 @@ Documented failures found during systematic testing against `data/questions.json
 
 ## How this maps to the eval runner
 
-Run `uv run python -m scripts.evaluate` and cross-reference failed questions in `data/eval/report.md` against this log — if it's not here yet, add it. Compare runs with `uv run python -m scripts.regression <baseline.json> <results.json>`.
+Run `uv run python -m scripts.eval_runner --retrieval-only` (nearly free, enough after a retrieval change) or without the flag for full answers (after a prompt change), and cross-reference failed questions in `data/eval/report.md` against this log — if it's not here yet, add it. Compare runs with `uv run python -m scripts.regression <before.json> data/eval_results.json`.
 
 ## Regression checks
 
-Each change is checked with `uv run python -m scripts.regression <before.json> <after.json>` over all questions in `data/questions.json`. Runs below are in `--mode local` (no API key yet): re-run in `--mode api` before reporting final numbers.
+Each change is checked with `uv run python -m scripts.regression <before.json> <after.json>` over all questions in `data/questions.json` (runs up to the BM25 merge used the earlier `scripts/evaluate.py`, replaced by `scripts/eval_runner.py`). Runs below are in `--mode local` (no API key yet): re-run in `--mode api` before reporting final numbers.
 
 | Change | Correct | Context recall | Fixed | Regressed | Notes |
 |--------|:---:|:---:|---|---|---|
 | Question cleaning (prompt injection), follow-up rewrite check, per-model off-topic threshold | 45% → 45% | 66% → 66% | — | — | Identical results. Adding anti-injection rules to the system prompt was tried and dropped: it made the local model refuse Q3, Q4 and Q6 (fines, compute threshold), which it answered before. Injection test: 7/10 → 10/10 attacks resisted. |
 | Hybrid search (BM25 + RRF), merged with the above | 45% → 50% | 66% → 71% | Q9, Q19, Q27 (Q27 was a retrieval miss: BM25 finds the open-source exemption on p. 46) | Q32, not a real regression | Q32 "passed" before with a wrong answer (said open-source chatbots don't have to disclose they're AI; Article 2(12) says they do) and now refuses. Shows the "correct = cited an expected page" metric can pass wrong answers. Injection test still 10/10. |
 | Conversation memory: last 2 exchanges sent to the answer model, follow-up rewrite capped at 2 exchanges, history replayed in the evaluation | 50% → 50% | 71% → 71% | — | — | Identical on all questions (none has a `history` field yet, and the answer prompt without history is unchanged). Tested on a 5-turn conversation: follow-up and "explain that more simply" receive the earlier exchanges; a new standalone question mid-conversation is answered correctly; nonsense is still refused. The local 3B model simplified the wrong item in "explain that" with the right history in its prompt: check in `--mode api`. |
+| Eval runner (`scripts/eval_runner.py`) replaces `scripts/evaluate.py`; search steps in `app/rag.py` shared by the app and the runner; `USE_RERANK` / `USE_QUERY_REWRITE` switches | 50% → 50% | — | — | — | Behaviour check: all 44 answers word-for-word identical to the run before the refactor. Retrieval-only (local): R@1 0.61, R@3 0.76, R@5 0.84, MRR 0.70. Ablation in `data/eval/ablation.md`. |

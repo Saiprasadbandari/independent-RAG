@@ -12,7 +12,7 @@ Confidence is their weighted average. An uncited or truncated answer is capped b
 For a refusal, confidence is about the refusal itself: high when nothing relevant was
 found, low when a strong passage existed and the model still declined.
 
-The weights and bands are starting points; scripts/evaluate.py reports how often each
+The weights and bands are starting points; scripts/eval_runner.py (full mode) reports how often each
 band is actually right so they can be tuned on the real question set.
 """
 

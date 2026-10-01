@@ -34,6 +34,10 @@ RERANK_CANDIDATES = 15
 # that pure vector search can miss — see the "exact_term" stress-test category.
 USE_BM25 = True
 BM25_CANDIDATES = 15
+# The other switches for the ablation table (scripts/eval_runner.py --ablation flips them per
+# row): cross-encoder re-ranking, and rewriting follow-ups into standalone questions for search.
+USE_RERANK = True
+USE_QUERY_REWRITE = True
 NO_INFO = "I don't have information about that in the provided documents."
 TRUNCATED_NOTE = "\n\n*(Answer cut off at the length limit.)*"
 # bump when question or answer handling changes so cached answers are regenerated
@@ -447,6 +451,8 @@ class RAG:
         self.reranker = load_reranker()
         reranker_id = (self.reranker.name, self.reranker.min_relevance) if self.reranker else None
         self.bm25 = BM25Index(retriever.chunks) if USE_BM25 else None
+        self.use_rerank = USE_RERANK and self.reranker is not None
+        self.use_rewrite = USE_QUERY_REWRITE
         # local/hybrid clients (app/local_models.py) say which models they really run
         embedding_id = getattr(client, "embedding_model", EMBEDDING_MODEL)
         self.min_score = MIN_SCORES.get(embedding_id, MIN_SCORE)
@@ -463,6 +469,7 @@ class RAG:
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, embedding_id, chat_id, SYSTEM_PROMPT, top_k, self.min_score, MAX_TOKENS,
             RERANK_CANDIDATES, reranker_id, context_id, ANSWER_FORMAT_VERSION, REFLECTION_VERSION,
+            USE_BM25, self.use_rerank, self.use_rewrite,
         ))
         self.rewrite_cache = DiskCache(cache_dir / "rewrites.json", fingerprint(
             chat_id, CONDENSE_PROMPT, HISTORY_TURNS, HISTORY_ANSWER_CHARS, REWRITE_MAX_TOKENS,
@@ -595,6 +602,37 @@ class RAG:
             elif kind == "answer":
                 return value
 
+    def needs_rewrite(self, asked: str, history: list[tuple[str, str]] | None) -> bool:
+        return bool(self.use_rewrite and history and asked and looks_like_follow_up(asked))
+
+    def search_steps(self, standalone: str):
+        """Retrieval for one question: yields ("stage", name) events and returns
+        (candidates, ranked, context). ask_stream streams it; search() runs it to the end."""
+        # nothing left after removing instructions: there's no question to search for
+        candidates = self.retrieve(standalone) if standalone else []
+        # off-topic stops here. Decided on meaning: BM25 matches common words in almost any
+        # question, so keyword hits alone don't make a question on-topic
+        on_topic = any(not c.get("keyword_only") and c["score"] >= self.min_score for c in candidates)
+        plausible = relevant_chunks(candidates, self.min_score) if on_topic else []
+        if self.use_rerank and plausible:
+            yield "stage", "reranking"
+            ranked = self.rerank(standalone, plausible)
+            context = self.select_context(standalone, ranked)
+        else:
+            ranked = plausible
+            context = plausible[:self.top_k]
+        return candidates, ranked, context
+
+    def search(self, standalone: str) -> tuple[list[dict], list[dict], list[dict]]:
+        """(candidates, ranked, context) without generating an answer: the eval runner's
+        retrieval-only mode."""
+        steps = self.search_steps(standalone)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as done:
+                return done.value
+
     def ask_stream(self, question: str, history: list[tuple[str, str]] | None = None):
         """ask(), as events: ("stage", name), ("delta", answer text so far), and finally
         ("answer", Answer)."""
@@ -605,7 +643,7 @@ class RAG:
         # the cleaned version as "Interpreted as" whenever it differs
         asked = sanitize_question(question)
         standalone = asked
-        if history and asked and looks_like_follow_up(asked):
+        if self.needs_rewrite(asked, history):
             yield "stage", "rewriting"
             standalone = self.condense(asked, history)
 
@@ -622,19 +660,7 @@ class RAG:
             return
 
         yield "stage", "searching"
-        # nothing left after removing instructions: there's no question to search for
-        candidates = self.retrieve(standalone) if standalone else []
-        # off-topic stops here. Decided on meaning: BM25 matches common words in almost any
-        # question, so keyword hits alone don't make a question on-topic
-        on_topic = any(not c.get("keyword_only") and c["score"] >= self.min_score for c in candidates)
-        plausible = relevant_chunks(candidates, self.min_score) if on_topic else []
-        if self.reranker and plausible:
-            yield "stage", "reranking"
-            ranked = self.rerank(standalone, plausible)
-            context = self.select_context(standalone, ranked)
-        else:
-            ranked = plausible
-            context = plausible[:self.top_k]
+        candidates, ranked, context = yield from self.search_steps(standalone)
 
         yield "stage", "generating"
         so_far = ""

@@ -92,24 +92,30 @@ similarity threshold) skip re-ranking and the LLM call.
   local re-ranker). Truncated answers are capped below "high". For a refusal, the score is
   confidence in the refusal: high when nothing relevant was found, low when a strong passage
   existed.
-- **Evaluation** (`scripts/evaluate.py`): runs every question in `data/questions.json` and writes
-  `data/eval/report.md` and `data/eval/results.json`.
+- **Eval runner** (`scripts/eval_runner.py`): runs every question in `data/questions.json` and
+  writes `data/eval_results.json` (summary plus one row per question) and `data/eval/report.md`.
 
   ```bash
-  uv run python -m scripts.evaluate               # all questions
-  uv run python -m scripts.evaluate --limit 5     # quick run
-  uv run python -m scripts.evaluate --fresh       # ignore cached answers (costs API calls)
+  uv run python -m scripts.eval_runner --retrieval-only            # search + re-rank, no answers (nearly free)
+  uv run python -m scripts.eval_runner                             # full: answers generated too
+  uv run python -m scripts.eval_runner --retrieval-only --ablation # ablation table -> data/eval/ablation.md
+  uv run python -m scripts.eval_runner --limit 5 --fresh           # quick run, ignoring caches
   ```
 
-  The report covers retrieval quality (Hit@k, Recall@k, MRR, FAISS order vs re-ranked),
-  context recall, citation accuracy, refusal accuracy, token F1 against `expected_answer`,
-  results by category and sub-type, the priority questions, and which stage each failure came
-  from (retrieval, ranking or generation). Its calibration table shows whether each confidence
-  band is right as often as it claims; use it to tune the weights in `app/reflection.py`.
+  A retrieved chunk is a hit when its `(source, page)` is in the question's `expected_chunks`.
+  The report gives recall@1/3/5 and MRR (on questions with `expected_chunks`), refusals on
+  out-of-scope and on-topic-unanswerable questions, average latency, breakdowns by category,
+  difficulty and sub-type, a confidence-threshold table (correct vs wrong refusals at each top
+  re-ranker score) and the failed questions with their stage (retrieval, ranking, generation). Each
+  row logs the retrieved chunks with scores, the rank of the first expected chunk, the rewritten
+  query for follow-ups, latency, and in full mode the answer, citations, cost, and a
+  `correct_manual` field to fill in by hand. Full mode also has a calibration table (is each
+  confidence band right as often as it claims). `--no-rerank`, `--no-bm25` and `--no-rewrite`
+  switch one improvement off; `--ablation` measures them cumulatively.
 
 ## Run modes
 
-`uv run python -m app.main --mode <mode>` (also `scripts.evaluate --mode`) picks where each step runs:
+`uv run python -m app.main --mode <mode>` (also `scripts.eval_runner --mode`) picks where each step runs:
 
 | mode | embeddings | answers | needs API key | cost per new question |
 |---|---|---|---|---|
@@ -162,8 +168,8 @@ text-embedding-3-small, 0.60 for the local bge-base, whose scores run higher.
 
 ```bash
 uv run python -m scripts.injection_test --mode local   # 10 attacks, writes data/eval/injection.md
-uv run python -m scripts.evaluate --mode local --fresh # full question set
-uv run python -m scripts.regression data/eval/baseline.json data/eval/results.json   # exits 1 on regressions
+uv run python -m scripts.eval_runner --mode local --fresh # full question set
+uv run python -m scripts.regression data/eval/baseline.json data/eval_results.json   # exits 1 on regressions
 ```
 
 The injection test covers instruction override, persona jailbreaks, system-prompt extraction,
