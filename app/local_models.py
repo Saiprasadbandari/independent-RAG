@@ -23,7 +23,8 @@ from app.utils import DATA_DIR
 LOCAL_EMBED_MODEL = "BAAI/bge-base-en-v1.5"
 LOCAL_CHAT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 MODES = ("api", "hybrid", "local")
-TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+# the closing tag can be missing when the reply hits max_tokens right after the call
+TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>|$)", re.S)
 
 
 class LocalEmbeddings:
