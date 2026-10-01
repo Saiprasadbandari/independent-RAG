@@ -10,6 +10,7 @@ import openai
 
 from app.export import export
 from app.rag import RAG, cited_refs
+from app.send_message import send_to_teams
 from app.utils import DATA_DIR, format_citation, format_retrieved
 
 FEEDBACK_PATH = DATA_DIR / "feedback.jsonl"
@@ -286,6 +287,25 @@ class ChatHandlers:
     def pick_suggestion(self, label: str):
         return label
 
+    def prepare_send(self, turns: list, selected: int | None):
+        """Step 1 of the approval gate: shows an editable preview, sends nothing yet."""
+        if not turns:
+            raise gr.Error("Nothing to send yet.")
+        index = selected if selected is not None else len(turns) - 1
+        turn = turns[index]
+        if "answer" not in turn:
+            raise gr.Error("Can't send a failed answer.")
+        preview = turn["answer"]["text"]
+        shown = gr.update(visible=True)
+        return gr.update(value=preview, visible=True), shown, shown, ""
+
+    def confirm_send(self, preview_text: str):
+        """Step 2: only runs when the person clicks Confirm, on whatever text is in the
+        (editable) preview box at that moment -- not necessarily the original answer verbatim."""
+        result = send_to_teams(preview_text)
+        hidden = gr.update(visible=False)
+        return result, hidden, hidden, hidden
+
 
 MINIMAL_CSS = """
 .gradio-container { max-width: 1100px !important; margin: auto; }
@@ -335,8 +355,16 @@ def build_ui(rag: RAG) -> gr.Blocks:
             chat_pdf = gr.Button("Export .pdf", size="sm")
             answer_txt = gr.Button("Export selected answer .txt", size="sm")
             answer_pdf = gr.Button("Export selected answer .pdf", size="sm")
+            send_btn = gr.Button("Send selected answer to Teams", size="sm")
         export_file = gr.File(label="Download", interactive=False)
         cost = gr.Markdown(rag.tracker.summary(), visible=False)  # kept for the clear() wiring below
+
+        # human-approval gate for send_message: preview first, nothing sent until Confirm
+        send_preview = gr.Textbox(label="Preview — edit if needed, nothing is sent yet", visible=False, lines=3)
+        with gr.Row():
+            send_confirm = gr.Button("Confirm & Send", variant="primary", visible=False, size="sm")
+            send_cancel = gr.Button("Cancel", visible=False, size="sm")
+        send_status = gr.Markdown()
 
         gr.Markdown("---")
         with gr.Accordion("Ablation table — RAG day 2 (vector-only → +re-ranking → +BM25)", open=True):
@@ -357,5 +385,12 @@ def build_ui(rag: RAG) -> gr.Blocks:
         for btn in suggestion_buttons:
             btn.click(handlers.pick_suggestion, [btn], [message]).then(
                 handlers.ask, [message, chat, turns], ask_outputs)
+
+        send_btn.click(handlers.prepare_send, [turns, selected],
+                       [send_preview, send_confirm, send_cancel, send_status])
+        send_confirm.click(handlers.confirm_send, [send_preview],
+                           [send_status, send_preview, send_confirm, send_cancel])
+        send_cancel.click(lambda: ("", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)),
+                          None, [send_status, send_preview, send_confirm, send_cancel])
 
     return demo
