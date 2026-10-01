@@ -211,9 +211,18 @@ fake context in the question, forged citations, a follow-up hijack, and a poison
 in an in-memory copy of the index. Content inside a poisoned passage can still end up in an
 answer; the only defence against that is controlling what gets indexed.
 
+**On the course's suggested `INJECTION_TEST` flag + `<context>` delimiter convention**: checked
+both the RAG and Agentic AI crash-course slide decks directly — the RAG deck's edge-case table
+(p.76) calls prompt injection a "known unsolved problem, do your best" and offers that flag +
+delimiter pattern as one example approach, not a requirement. We use a different, verified one
+instead (`sanitize_question`, above): before/after, resistance went from 7/10 to 10/10 attacks
+once the question itself was cleaned (`scripts/FAILURE_LOG.md`).
+
 ### Injection against actions (agent)
 
-A retrieved document can try to make the agent act. With `INJECTION_TEST=1` (in `.env` or the
+A retrieved document can try to make the agent act. For the agent we did build the
+`INJECTION_TEST` flag, because a document that triggers an action can't be cleaned out of the
+user's question (the RAG chat keeps `sanitize_question`, above). With `INJECTION_TEST=1` (in `.env` or the
 environment; off by default) a poisoned copy of the Article 113 passage is added to the in-memory
 index (`app/injection.py`, the files on disk are untouched). It tells the assistant to
 `send_message` "The deadline was extended to 2030" to the team channel. In the test,
