@@ -44,7 +44,8 @@ REF_BRACKET_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,]\s*\d+)*)\s*\]")
 # "[Source: EU AI Regulations.pdf, p. 9]" — the label from build_context, copied by the model
 SOURCE_LABEL_RE = re.compile(r"\[Source:\s*(.+?),\s*p\.\s*(\d+)\s*\]")
 # follow-ups are rewritten into a standalone question using this many previous turns
-HISTORY_TURNS = 3
+# (the course asks for the last 2 exchanges, to keep cost down)
+HISTORY_TURNS = 2
 HISTORY_ANSWER_CHARS = 600
 REWRITE_MAX_TOKENS = 100
 CONDENSE_PROMPT = """Rewrite the user's latest question so it can be understood without the conversation.
@@ -189,15 +190,22 @@ def build_context(chunks: list[dict]) -> str:
     return "\n\n".join(f"[{i}] [Source: {format_citation(c)}]\n{c['text']}" for i, c in enumerate(chunks, 1))
 
 
-def answer_messages(query: str, chunks: list[dict]) -> list[dict]:
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Context:\n{build_context(chunks)}\n\nQuestion: {query}"},
-    ]
+def answer_messages(query: str, chunks: list[dict], history: list[tuple[str, str]] | None = None,
+                    standalone: str | None = None) -> list[dict]:
+    """The answer prompt. With history, the last HISTORY_TURNS exchanges go in as earlier chat
+    turns (answers trimmed, citation markers removed so they can't be confused with this turn's
+    passage numbers), and a rewritten follow-up is added as a hint next to the original question."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for asked, answered in (history or [])[-HISTORY_TURNS:]:
+        messages += [{"role": "user", "content": asked}, {"role": "assistant", "content": history_answer(answered)}]
+    question = query if not standalone or standalone == query else f"{query}\n(In context: {standalone})"
+    messages.append({"role": "user", "content": f"Context:\n{build_context(chunks)}\n\nQuestion: {question}"})
+    return messages
 
 
 def generate_answer(query: str, retrieved_chunks: list[dict],
-                    client: OpenAI | None = None, tracker: CostTracker | None = None) -> str:
+                    client: OpenAI | None = None, tracker: CostTracker | None = None,
+                    history: list[tuple[str, str]] | None = None) -> str:
     relevant = relevant_chunks(retrieved_chunks)
     if not relevant:
         # skip the LLM call entirely — saves budget on off-topic questions
@@ -209,7 +217,7 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
         model=CHAT_MODEL,
         temperature=0,
         max_tokens=MAX_TOKENS,
-        messages=answer_messages(query, relevant),
+        messages=answer_messages(query, relevant, history),
     )
     track_cost(resp, tracker=tracker)
     choice = resp.choices[0]
@@ -223,7 +231,8 @@ def generate_answer(query: str, retrieved_chunks: list[dict],
 
 
 def stream_answer(query: str, retrieved_chunks: list[dict],
-                  client: OpenAI | None = None, tracker: CostTracker | None = None):
+                  client: OpenAI | None = None, tracker: CostTracker | None = None,
+                  history: list[tuple[str, str]] | None = None, standalone: str | None = None):
     """generate_answer, streamed: yields ("delta", text piece) as the model writes, then
     ("done", text, truncated, input_tokens, output_tokens)."""
     relevant = relevant_chunks(retrieved_chunks)
@@ -237,7 +246,7 @@ def stream_answer(query: str, retrieved_chunks: list[dict],
         model=CHAT_MODEL,
         temperature=0,
         max_tokens=MAX_TOKENS,
-        messages=answer_messages(query, relevant),
+        messages=answer_messages(query, relevant, history, standalone),
         stream=True,
         stream_options={"include_usage": True},
     )
@@ -297,7 +306,7 @@ def looks_like_follow_up(question: str) -> bool:
 
 
 def history_answer(answer: str) -> str:
-    """An earlier answer as context for rewriting: no citation markers, trimmed."""
+    """An earlier answer as conversation context: no citation markers, trimmed."""
     answer = re.sub(r"\s*\[[^\]]*\]", "", answer.replace(TRUNCATED_NOTE, ""))
     return answer[:HISTORY_ANSWER_CHARS]
 
@@ -594,12 +603,18 @@ class RAG:
 
         # act on the question minus any injected instructions or fake context; the chat shows
         # the cleaned version as "Interpreted as" whenever it differs
-        standalone = sanitize_question(question)
-        if history and standalone and looks_like_follow_up(standalone):
+        asked = sanitize_question(question)
+        standalone = asked
+        if history and asked and looks_like_follow_up(asked):
             yield "stage", "rewriting"
-            standalone = self.condense(standalone, history)
+            standalone = self.condense(asked, history)
 
+        # conversation memory: the answer model sees the last exchanges, so the same words can
+        # need a different answer in a different conversation, and the cache key says which
+        recent = (history or [])[-HISTORY_TURNS:]
         key = normalize_query(standalone)
+        if recent:
+            key = fingerprint(key, normalize_query(asked), [(normalize_query(q), a) for q, a in recent])
         hit = self.query_cache.get(key)
         if hit is not None:
             yield "answer", Answer(**{**hit, "question": question, "standalone_question": standalone,
@@ -623,7 +638,9 @@ class RAG:
 
         yield "stage", "generating"
         so_far = ""
-        for event in stream_answer(standalone, context, self.client, self.tracker):
+        # search used the rewritten question; the answer gets the user's own question plus the
+        # recent exchanges (and the rewrite as a hint), as the course describes
+        for event in stream_answer(asked, context, self.client, self.tracker, recent, standalone):
             if event[0] == "delta":
                 so_far += event[1]
                 yield "delta", so_far

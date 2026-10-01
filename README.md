@@ -173,10 +173,17 @@ answer; the only defence against that is controlling what gets indexed.
 
 ## Using the app
 
-- **Follow-up questions**: the chat remembers the conversation. A follow-up such as "what about
-  the second requirement?" is rewritten into a standalone question from the last 3 turns (one
-  small gpt-4o-mini call, cached), and the answer shows how it was interpreted. The 🗑 icon or
-  "Clear conversation" starts over.
+- **Conversation memory**: the answer model receives the last 2 exchanges (earlier answers
+  trimmed to 600 characters, citation markers removed) along with each new question, so it can
+  follow up on what was said ("explain that more simply"). Retrieval can't read history, so a
+  question that looks like a follow-up ("what about the second one?", "and the fines?") is also
+  rewritten into a standalone question for the search (one small gpt-4o-mini call, cached; skipped
+  on the first turn). The answer gets the user's own question, the history and the rewrite as a
+  hint; the chat shows the rewrite as "Interpreted as". A rewrite that drops the user's topic words
+  is discarded. Answers given inside a conversation are cached per conversation, so the same words
+  in another conversation get their own answer. The 🗑 icon or "Clear conversation" starts over.
+  In `questions.json`, follow-up questions list the earlier questions in a `history` field and the
+  evaluation replays them first.
 - **Sources**: the panel next to the chat shows the full text of every passage the model was
   given, with the cited ones marked ✅, plus their relevance and similarity scores. Click any
   earlier answer to see its sources. Candidates that didn't make it into the context are under

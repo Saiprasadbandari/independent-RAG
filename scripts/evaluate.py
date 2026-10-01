@@ -87,7 +87,13 @@ def failure_stage(answerable: bool, answer, expected: set) -> str:
 
 
 def evaluate_question(rag, question: dict, index: int) -> dict:
-    answer = rag.ask(question["question"])
+    # follow-up questions carry the earlier user questions in "history": replay them first so the
+    # follow-up is asked inside the same conversation, like in the app
+    history = []
+    for earlier in question.get("history") or []:
+        previous = rag.ask(earlier, history or None)
+        history.append((previous.standalone_question or earlier, previous.text))
+    answer = rag.ask(question["question"], history or None)
     answerable = question["category"] in ANSWERABLE
     expected = expected_pages(question)
     row = {
@@ -99,6 +105,8 @@ def evaluate_question(rag, question: dict, index: int) -> dict:
         "difficulty": question.get("difficulty"),
         "answerable": answerable,
         "expected_pages": sorted(expected),
+        "history": question.get("history") or [],
+        "rewritten_query": answer.standalone_question if answer.standalone_question != question["question"] else None,
         "answered": answer.in_scope,
         "answer": answer.text,
         "truncated": answer.truncated,
