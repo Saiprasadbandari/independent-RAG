@@ -130,6 +130,22 @@ A few should-refuse questions still score high regardless of threshold (0.999/0.
 problem, so no cutoff fixes it without also refusing answerable questions. It's caught separately
 by the uncited-answer confidence cap, not by this constant. Full details in `scripts/FAILURE_LOG.md`.
 
+### Ablation
+
+Each retrieval stage added cumulatively, measured with `scripts/eval_runner.py --ablation`:
+
+| Version | Recall@1 | Recall@5 | MRR |
+|---|---|---|---|
+| Vector only | 0.38 | 0.67 | 0.56 |
+| + re-ranking | 0.79 | 0.83 | 0.84 |
+| + BM25 (hybrid) | 0.79 | 0.83 | 0.85 |
+
+Re-ranking is the big jump (recall@1 more than doubles); BM25 on top gives a smaller but real MRR
+gain by fixing keyword-heavy questions vector search misses on its own. Kept both: the hybrid
+(vector + BM25 + re-ranking) pipeline is what `app/rag.py` runs by default (`USE_BM25` /
+`USE_RERANK` in `app/rag.py` toggle either off). Numbers above are api mode, `data/day2_final.json`
+(12-question sample); local mode numbers on the full 38-question set are in `scripts/FAILURE_LOG.md`.
+
 ## Run modes
 
 `uv run python -m app.main --mode <mode>` (also `scripts.eval_runner --mode`) picks where each step runs:
