@@ -13,3 +13,12 @@ Documented failures found during systematic testing against `data/questions.json
 ## How this maps to the eval runner
 
 Run `uv run python -m scripts.evaluate` and cross-reference failed questions in `data/eval/report.md` against this log — if it's not here yet, add it. Compare runs with `uv run python -m scripts.regression <baseline.json> <results.json>`.
+
+## Regression checks
+
+Each change is checked with `uv run python -m scripts.regression <before.json> <after.json>` over all questions in `data/questions.json`. Runs below are in `--mode local` (no API key yet): re-run in `--mode api` before reporting final numbers.
+
+| Change | Correct | Context recall | Fixed | Regressed | Notes |
+|--------|:---:|:---:|---|---|---|
+| Question cleaning (prompt injection), follow-up rewrite check, per-model off-topic threshold | 45% → 45% | 66% → 66% | — | — | Identical results. Adding anti-injection rules to the system prompt was tried and dropped: it made the local model refuse Q3, Q4 and Q6 (fines, compute threshold), which it answered before. Injection test: 7/10 → 10/10 attacks resisted. |
+| Hybrid search (BM25 + RRF), merged with the above | 45% → 50% | 66% → 71% | Q9, Q19, Q27 (Q27 was a retrieval miss: BM25 finds the open-source exemption on p. 46) | Q32, not a real regression | Q32 "passed" before with a wrong answer (said open-source chatbots don't have to disclose they're AI; Article 2(12) says they do) and now refuses. Shows the "correct = cited an expected page" metric can pass wrong answers. Injection test still 10/10. |
