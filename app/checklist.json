@@ -148,8 +148,9 @@
         {
           "title": "README and demo",
           "items": [
-            {"label": "9 agent demo scenarios in the README with expected tools", "done": false},
-            {"label": "README: what the agent does, how to run it", "done": false}
+            {"label": "9 agent demo scenarios in the README with expected tools", "done": false,
+             "note": "Table and expected tools are in the README; the team writes the questions and answers (no GenAI)."},
+            {"label": "README: what the agent does, how to run it", "done": true}
           ]
         }
       ]

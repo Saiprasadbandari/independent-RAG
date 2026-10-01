@@ -5,11 +5,12 @@ questions in data/questions.json through run_agent() and writes a scorecard.
     uv run python -m scripts.agent_eval_runner --mode hybrid
     uv run python -m scripts.agent_eval_runner --mock       # zero-cost mechanics check
 
---mode local is refused: app/local_models.py's LocalChatCompletions doesn't implement
-function/tool-calling (it just ignores the tools= argument and generates free text), so a
-local-mode agent would never call a single tool. That isn't evaluating the agent, it's
-evaluating whether the loop still returns a no-tool-calls answer on the first try. Use --mock
-(scripts/mock_client.py, scripted responses) to check the harness mechanics for free instead.
+    uv run python -m scripts.agent_eval_runner --mode local # Qwen2.5-3B on this machine, no key
+
+--mode local runs the agent on the local Qwen model, which makes real tool calls (Qwen's
+<tool_call> format, mapped to OpenAI tool_calls in app/local_models.py). It is a much weaker
+model than gpt-4o-mini, so use it to check routing for free, and report api-mode numbers.
+--mock (scripts/mock_client.py, scripted responses) only checks the harness mechanics.
 
 Writes data/agent_eval_results.json and data/eval/agent_report.md.
 
@@ -143,8 +144,8 @@ def write_report(rows: list[dict], summary: dict, config: dict, path: Path = REP
 
 def main():
     parser = argparse.ArgumentParser(description="Run the agent-category questions through run_agent()")
-    parser.add_argument("--mode", choices=("api", "hybrid"), default="api",
-                        help="local mode is refused -- it can't make tool calls, see module docstring")
+    parser.add_argument("--mode", choices=("api", "hybrid", "local"), default="api",
+                        help="local runs the agent on Qwen2.5-3B, see module docstring")
     parser.add_argument("--mock", action="store_true",
                         help="scripts/mock_client.py instead of a real API key -- zero cost, "
                              "checks the harness mechanics only, not real tool-choice/correctness")
