@@ -130,10 +130,8 @@
           "title": "Tools and actions",
           "items": [
             {"label": "Two more tools of your own (5 in total), justified in the README", "auto": "five_tools"},
-            {"label": "Recovery: rephrase and retry with a retry limit", "done": false,
-             "note": "A repeated-call guard exists; a real retry limit doesn't."},
-            {"label": "send_message as an agent tool, behind human approval", "auto": "send_message_tool",
-             "note": "Sai's Teams webhook + approval button exists (PR #13); the agent can't call it yet."},
+            {"label": "Recovery: rephrase and retry with a retry limit", "done": true},
+            {"label": "send_message as an agent tool, behind human approval", "auto": "send_message_tool"},
             {"label": "Injection against actions: test chunk, fake send that declines, before/after", "done": false}
           ]
         },
