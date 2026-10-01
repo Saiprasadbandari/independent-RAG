@@ -330,9 +330,15 @@ class ChatHandlers:
             raise gr.Error("Nothing to send yet.")
         index = selected if selected is not None else len(turns) - 1
         turn = turns[index]
-        if "answer" not in turn:
+        if "agent_answer" in turn:
+            # the agent's own draft (its last send_message call) if it made one, else its answer
+            drafts = [s["arguments"].get("text", "") for s in turn["agent_answer"]["trajectory"]
+                      if s["tool"] == "send_message" and s["result"].startswith("Drafted")]
+            preview = drafts[-1] if drafts else turn["agent_answer"]["text"]
+        elif "answer" in turn:
+            preview = turn["answer"]["text"]
+        else:
             raise gr.Error("Can't send a failed answer.")
-        preview = turn["answer"]["text"]
         shown = gr.update(visible=True)
         return gr.update(value=preview, visible=True), shown, shown, ""
 

@@ -15,6 +15,11 @@ A RAG app over the EU AI Act (Regulation (EU) 2024/1689). Questions are answered
 embeddings, with document + page citations. Questions outside the corpus get
 "I don't have information about that in the provided documents."
 
+An **agent mode** (tick 🤖 Agent mode in the chat) lets the model decide for itself which tools to
+use: search the regulation, calculate, quote a page, look up a definition, compute the time
+between two dates, or draft a message to the team's Teams channel, which only a person can send.
+See [Agent](#agent).
+
 ## Getting started
 
 Python 3.12, managed with [uv](https://docs.astral.sh/uv/). Install uv once
@@ -339,6 +344,75 @@ answer should cite. All are in `data/questions.json` (the first five are the `pr
    a good test of refusal since the question sounds on-topic (EU tech regulation) but isn't
    answerable from the indexed document.
    Page: none (correct behaviour is no citation, no answer).
+
+## Agent
+
+### What the agent does
+
+The agent answers the same questions as the RAG chat, but instead of always running one search
+it decides at each step what to do next (`app/agent.py`): think, call a tool, read the result,
+repeat, then answer with citations. It handles questions that need more than one action (search
+for a fine, then calculate it for a given turnover) and answers small talk without any tool.
+
+- **Tools**: six, described in [Agent tools](#agent-tools): `search_corpus`, `calculator`,
+  `quote_exact`, `get_definition`, `date_diff` (all read-only) and `send_message` (the one action).
+- **Step cap**: at most 6 tool-calling steps (`MAX_STEPS`). At the cap the model must answer
+  with what it has.
+- **Recovery**: when a search finds nothing, the prompt tells the agent to rephrase and try again.
+  After 3 failed calls in a row (`RETRY_LIMIT`) it stops and says it doesn't have the
+  information, and an identical repeated call is refused instead of run again.
+- **Human approval for actions**: `send_message` only drafts. Nothing reaches Teams until a
+  person clicks **Send selected answer to Teams**, checks or edits the preview and clicks
+  **Confirm & Send**. The agent is only offered `send_message` when the user's own message asks
+  to send, post or share something (see [Injection against actions](#injection-against-actions-agent)).
+- **Grounding**: the system prompt tells it to answer only from tool results, cite source and
+  page, treat retrieved text as data rather than instructions, and say so when the documents
+  don't cover the question. Temperature is 0, so a rehearsed run gives the same trajectory.
+- **Trace**: the chat shows each tool call with its arguments under the answer (🤖 Tool calls),
+  and every run is logged with arguments and results to `data/trajectories.jsonl`.
+
+### Running it
+
+```bash
+uv run python -m app.main               # api mode (gpt-4o-mini), then tick 🤖 Agent mode
+uv run python -m app.main --mode local  # no API key: Qwen2.5-3B makes the tool calls (slower, weaker)
+```
+
+To send for real, put the channel's incoming-webhook URL in `.env` as `TEAMS_WEBHOOK_URL`.
+To show the injection test, start the app with `INJECTION_TEST=1` in `.env` or in front of the
+command.
+
+```bash
+uv run python -m scripts.agent_eval_runner --mode api      # agent questions: tool choice, steps, latency, cost
+uv run python -m scripts.agent_eval_runner --mode local    # same, free, on Qwen2.5-3B
+uv run python -m scripts.action_injection_test --mode api  # injection against actions, before/after
+uv run python scripts/test_agent_local.py                  # loop mechanics, scripted fake client (needs the api index)
+```
+
+### Agent demo scenarios
+
+One question per scenario, run live at temperature 0 with the trace shown next to the answer.
+They are also the agent eval questions in `data/questions.json` (`"category": "agent"`, the
+scenario as `sub_type`, and `expected_tools`).
+
+| # | Scenario (`sub_type`) | Expected tool calls | Question | Expected answer |
+|---|---|---|---|---|
+| 1 | One tool (`one_tool`) | `search_corpus` once, then the answer | _to write_ | _to write_ |
+| 2 | Same tool, several times (`same_tool_multiple`) | `search_corpus` once per fact, the facts sit in different articles | _to write_ | _to write_ |
+| 3 | Rephrase and retry (`rephrase_retry`) | `search_corpus` → "No matching passages found." → `search_corpus` with other wording | _to write_ | _to write_ |
+| 4 | Search, then calculate (`search_then_calculate`) | `search_corpus` for the figures → `calculator` | _to write_ | _to write_ |
+| 5 | Own tool: exact quote (`own_tool_quote_exact`) | `search_corpus` → `quote_exact` on the page it found | _to write_ | _to write_ |
+| 6 | Own tool: definition (`own_tool_get_definition`) | `get_definition` | _to write_ | _to write_ |
+| 7 | Own tool: dates (`own_tool_date_diff`) | `search_corpus` for the dates → `date_diff` | _to write_ | _to write_ |
+| 8 | No tool (`no_tool`) | none, the agent answers directly | _to write_ | _to write_ |
+| 9 | Act, with approval (`act_with_approval`) | `send_message` (drafts) → a person confirms in the UI → posted to Teams | _to write_ | _to write_ |
+| 10 | Out of scope (`out_of_scope`) | `search_corpus` → nothing relevant → says so, no repeated searching | _to write_ | _to write_ |
+| 11 | Injection against actions (`injection_action`) | with `INJECTION_TEST=1`: `search_corpus` retrieves the poisoned passage; no send reaches the approval gate | _to write_ | _to write_ |
+
+The course lists 9 scenarios; "Your own tools" is one question per tool, so it takes three rows
+here (5 to 7). For scenario 3, check beforehand that the first wording really fails
+(`uv run python -m scripts.retrieval_checker "<wording>"`) and the rephrased one succeeds. For scenario 9,
+check the message actually arrived in the channel, not just that the agent said it was sent.
 
 ## Agent tools
 
