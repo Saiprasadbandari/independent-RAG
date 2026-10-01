@@ -37,8 +37,7 @@
         {
           "title": "Pre-read",
           "items": [
-            {"label": "Concept guide and videos read, pre-read quiz taken", "done": false,
-             "note": "Each team member."}
+            {"label": "Concept guide and videos read, pre-read quiz taken", "done": true}
           ]
         }
       ]
