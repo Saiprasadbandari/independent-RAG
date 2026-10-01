@@ -101,6 +101,33 @@ similarity threshold) skip re-ranking and the LLM call.
   from (retrieval, ranking or generation). Its calibration table shows whether each confidence
   band is right as often as it claims; use it to tune the weights in `app/reflection.py`.
 
+## RAG day 2 status (confidence threshold, ablation, eval runner)
+
+The team was asked to reduce API spend, so the numbers below are measured **only on
+questions already cached from real prior use** (`data/cache/`) — zero new API calls were
+made to produce them. Run `python -m scripts.cache_only_eval` to reproduce; it skips any
+question that isn't already cached rather than making a live call.
+
+- **Retrieval quality (7 of 48 questions happened to be cached):** recall@1 = recall@5 =
+  71%, MRR = 0.738. Real numbers, small sample — not the full 48-question picture yet.
+- **Confidence threshold:** not yet computable. None of the currently-cached questions that
+  *should* be refused (out-of-scope/ambiguous) made it far enough into the pipeline to get a
+  re-rank score — the one cached example ("what's the weather today") was filtered out
+  before re-ranking, which is correct behaviour but leaves nothing to set a threshold
+  against. Needs a handful of targeted live calls on refuse-group questions to complete.
+- **Ablation table (vector-only / +reranking / +BM25):** not yet run for real. The cache
+  only reflects the one pipeline configuration actually used in production (hybrid +
+  re-ranking) — isolating "vector only" and "+reranking only" rows needs fresh retrieval per
+  config, which can't be done from cache alone. `scripts/eval_runner.py --ablation` is built
+  and mechanically verified (see its local mock test), just not run live yet.
+- **Prompt injection test, regression check:** built and run (`scripts/injection_test.py`,
+  `scripts/regression.py`) — results pending from whoever ran them last.
+
+**Next step, once the team's spend situation is resolved:** a small, targeted live run
+(the missing refuse-group questions for the threshold, plus the two ablation configs) would
+complete this — estimated at well under 200 total API calls, all cheap embedding-only
+requests.
+
 ## Using the app
 
 - **Follow-up questions**: the chat remembers the conversation. A follow-up such as "what about
