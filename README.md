@@ -291,3 +291,25 @@ answer should cite. All are in `data/questions.json` (the first five are the `pr
    a good test of refusal since the question sounds on-topic (EU tech regulation) but isn't
    answerable from the indexed document.
    Page: none (correct behaviour is no citation, no answer).
+
+## Agent tools
+
+Three tools, defined in `app/tools.py` and bound to the agent loop in `app/agent.py`:
+
+- **`search_corpus(query)`** — wraps `RAG.retrieve()` + `RAG.rerank()`, so the agent's search uses
+  the exact same hybrid retrieval, re-ranking and caching as the regular chat path, not a separate
+  weaker lookup.
+- **`calculator(expression)`** — arithmetic via `simpleeval`, never Python's `eval()`, so a
+  malicious expression from the model or from a poisoned document can't execute arbitrary code.
+- **`quote_exact(source, page)`** — our own tool, not one of the two required ones above. Returns
+  the complete, unedited text of one page from the corpus, looked up directly by `(source, page)`.
+  Justification: `search_corpus` returns re-ranked *chunks*, which are ~1000 characters and can
+  cut a sentence or a numbered list mid-way (chunking is `CHUNK_SIZE=1000` with 200-character
+  overlap in `app/utils.py`). Before the agent quotes or cites a passage precisely — a fine
+  amount, a deadline, a list of conditions — it can call `quote_exact` on the page `search_corpus`
+  pointed to and read the whole page, uncut, rather than risk quoting a number or clause that got
+  split across a chunk boundary.
+
+All three always return a string and never raise — a missing match or a bad expression comes back
+as readable text ("No matching passages found.", an error message) so the agent can read the
+failure and decide what to do next instead of the loop crashing.
