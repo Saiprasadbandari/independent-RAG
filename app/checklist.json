@@ -110,8 +110,7 @@
           "items": [
             {"label": "search_corpus tool with a \"No matching passages found\" threshold", "auto": "tool:search_corpus"},
             {"label": "calculator tool (simpleeval)", "auto": "tool:calculator"},
-            {"label": "One tool of your own, justified in the README", "auto": "readme_own_tool",
-             "note": "quote_exact exists on Sai's branch; the README justification is missing."}
+            {"label": "One tool of your own, justified in the README", "auto": "readme_own_tool"}
           ]
         },
         {

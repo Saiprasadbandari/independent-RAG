@@ -294,7 +294,7 @@ answer should cite. All are in `data/questions.json` (the first five are the `pr
 
 ## Agent tools
 
-Three tools, defined in `app/tools.py` and bound to the agent loop in `app/agent.py`:
+Six tools, defined in `app/tools.py` and bound to the agent loop in `app/agent.py` (`send_message` is the action tool, behind human approval):
 
 - **`search_corpus(query)`** — wraps `RAG.retrieve()` + `RAG.rerank()`, so the agent's search uses
   the exact same hybrid retrieval, re-ranking and caching as the regular chat path, not a separate
@@ -309,7 +309,27 @@ Three tools, defined in `app/tools.py` and bound to the agent loop in `app/agent
   amount, a deadline, a list of conditions — it can call `quote_exact` on the page `search_corpus`
   pointed to and read the whole page, uncut, rather than risk quoting a number or clause that got
   split across a chunk boundary.
+- **`get_definition(term)`** — our own tool. Returns the official definition of a term from
+  Article 3 (Definitions), word for word, with its page. The 68 definitions are parsed once from
+  `corpus.json` (pages 46 to 50), so the lookup is exact and costs nothing.
+  Justification: who is a "provider", a "deployer" or a "downstream provider" decides which
+  obligations apply, so a user asking what a term means needs that exact definition. `search_corpus`
+  does this badly: Article 3 is one long list of near-identical entries ("provider" / "downstream
+  provider", "AI system" / "general-purpose AI system"), and a semantic search for "provider" can
+  return a neighbouring definition or a recital that only mentions the word. An unknown term returns
+  "No definition found", plus the defined terms that contain it ("model" → "general-purpose AI
+  model"), so the agent can fall back to `search_corpus`.
+- **`date_diff(start, end)`** — our own tool. Returns the time between two dates in days and in
+  calendar months plus days (`datetime`, no new dependency).
+  Justification: the Act phases in by date — Article 113 (p. 123) applies it from 2 February 2025,
+  2 August 2025, 2 August 2026 and 2 August 2027 depending on the chapter — so users ask how long
+  they have between two of them, or between a date and a deadline. `search_corpus` finds the dates but can't
+  compute the gap, `calculator` can't do calendar arithmetic (month lengths, leap years), and the
+  model counting months in its head is exactly the kind of arithmetic it gets wrong. Typical
+  trajectory: `search_corpus` for the dates, then `date_diff` on them.
+  Note: the corpus is the 2024 text. The Digital Omnibus agreement (May 2026) moved some high-risk
+  deadlines; the agent answers from the corpus, not from what the model may have read elsewhere.
 
-All three always return a string and never raise — a missing match or a bad expression comes back
+All six always return a string and never raise — a missing match or a bad expression comes back
 as readable text ("No matching passages found.", an error message) so the agent can read the
 failure and decide what to do next instead of the loop crashing.

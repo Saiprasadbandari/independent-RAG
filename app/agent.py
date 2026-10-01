@@ -30,11 +30,12 @@ TRAJECTORY_PATH = DATA_DIR / "trajectories.jsonl"
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant that answers questions about the EU AI Act using tools. "
-    "You have four tools: search_corpus (search the regulation for relevant passages), "
+    "You have six tools: search_corpus (search the regulation for relevant passages), "
     "calculator (for any arithmetic — never compute it yourself), quote_exact "
     "(get the exact full text of a specific page, to verify or quote a passage precisely "
-    "after a search points you to it), and send_message (draft a message to the team's "
-    "Teams channel — it only drafts, a human must approve it before anything is sent).\n\n"
+    "after a search points you to it), get_definition (the official Article 3 definition "
+    "of a term), date_diff (time between two dates — never count months yourself), and "
+    "send_message (draft a message to the team's Teams channel — it only drafts, a human must approve it before anything is sent).\n\n"
     "Think about what information you need before answering. "
     "Use search_corpus whenever the question is about the regulation's content. "
     "Use the calculator for any arithmetic, including percentages — never do math in your head. "
@@ -47,7 +48,7 @@ SYSTEM_PROMPT = (
     "Cite the source and page for any fact you use, the way the tool results give them to you."
 )
 
-FAILURE_PREFIXES = ("Error", "No matching passages found.", "No text found for")
+FAILURE_PREFIXES = ("Error", "No matching passages found.", "No text found for", "No definition found for")
 
 
 def _is_failure(result: str) -> bool:
