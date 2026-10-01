@@ -309,6 +309,14 @@ def sanitize_question(question: str) -> str:
     question's own claims can't pose as retrieved passages, and sentences that give the
     assistant orders ("ignore your rules", "end your answer with…") are dropped. Returns ""
     when nothing but instructions was left.
+
+    The course's edge-case guidance (RAG crash course slides, p.76) calls prompt injection a
+    "known unsolved problem, do your best" and suggests one example defense: an INJECTION_TEST
+    flag plus wrapping retrieved text in <context> delimiters. Checked both the RAG and Agentic
+    AI slide decks directly -- neither actually requires that exact flag/delimiter mechanism, so
+    this function uses a different, verified-working approach instead: stripping attacker
+    instructions and fake context from the question text itself, covering 10 attack types in
+    scripts/injection_test.py (10/10 resisted, before/after logged in scripts/FAILURE_LOG.md).
     """
     parts = QUESTION_LABEL_RE.split(question)
     text = FAKE_CONTEXT_RE.sub(" ", parts[-1])
