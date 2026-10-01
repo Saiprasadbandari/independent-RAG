@@ -414,6 +414,42 @@ here (5 to 7). For scenario 3, check beforehand that the first wording really fa
 (`uv run python -m scripts.retrieval_checker "<wording>"`) and the rephrased one succeeds. For scenario 9,
 check the message actually arrived in the channel, not just that the agent said it was sent.
 
+### Agent vs RAG
+
+The same questions through the plain RAG pipeline and through the agent, each with its own empty
+cache and with the fake send (`scripts/agent_vs_rag.py`). Questions: the agent eval questions
+plus the 5 priority questions. "Model calls" counts chat-completion calls.
+
+```bash
+uv run python -m scripts.agent_vs_rag --mode api     # or hybrid / local; writes data/eval/agent_vs_rag.md
+```
+
+First run: local mode (Qwen2.5-3B for both), the 5 priority questions only (the agent eval
+questions aren't written yet). Correctness checked by hand against the expected answers.
+
+| # | Priority question | RAG | Agent | Model calls (RAG / agent) | Agent tools | Latency (RAG / agent) |
+|---|---|---|---|---|---|---|
+| 1 | Maximum fine for breaching Article 5 | ✅ | ❌ EUR 1.5M, from Article 100 (fines on EU institutions) | 1 / 2 | search | 18s / 37s |
+| 2 | What a fundamental rights impact assessment covers, and when | ⚠️ 2 of 6 items | ⚠️ 4 of 6 items | 1 / 2 | search | 20s / 48s |
+| 3 | Maximum fine for a high-risk provider (Article 6 → 99(4)) | ❌ refused | ❌ 3 searches, never found 99(4) | 1 / 4 | search ×3 | 15s / 154s |
+| 4 | Military / national security exclusion | ✅ cited | ✅ but no citation | 1 / 2 | search | 21s / 39s |
+| 5 | The 8 areas of Annex III | ❌ | ❌ | 1 / 2 | search | 18s / 49s |
+| | **Total** | **2 correct, 1 partial** | **1 correct, 1 partial** | **1.0 / 2.4 avg** | | **18s / 65s avg** |
+
+Where each is worth it:
+- **Single-lookup questions: the plain pipeline is enough.** All 5 priority questions need one
+  search. The agent spends 2 to 4 model calls and about 3.5 times the latency on them, and is no
+  more accurate: picking its own search query, it retrieved the wrong article once (question 1)
+  and dropped the citation once (question 4).
+- **The agent earns its cost when one search isn't enough.** On question 3 it searched three
+  times where RAG refused, which is the recovery behaviour working, though the 3B model still
+  didn't find the answer. Its real advantages are the questions the RAG pipeline can't do at
+  all: arithmetic on retrieved figures (`calculator`), time between dates (`date_diff`), exact
+  definitions and quotes, and actions behind approval (`send_message`). Those are what the agent
+  eval questions measure, so their rows go in this table once the team has written them.
+- To do: the api-mode run (gpt-4o-mini) with the agent eval questions, which is the comparison
+  to present.
+
 ## Agent tools
 
 Six tools, defined in `app/tools.py` and bound to the agent loop in `app/agent.py` (`send_message` is the action tool, behind human approval):
