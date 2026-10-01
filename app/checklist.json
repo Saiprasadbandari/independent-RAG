@@ -20,8 +20,7 @@
             {"label": "scripts/extract.py", "auto": "file:scripts/extract.py"},
             {"label": "data/corpus.json and data/sample.json", "auto": "corpus_files"},
             {"label": "scripts/EXTRACTION_REPORT.md", "auto": "file:scripts/EXTRACTION_REPORT.md"},
-            {"label": "corpus.json + sample.json uploaded to Teams, repo link and stats posted", "done": false,
-             "note": "Set to true once posted on Teams."}
+            {"label": "corpus.json + sample.json uploaded to Teams, repo link and stats posted", "done": true}
           ]
         },
         {
@@ -32,8 +31,7 @@
             {"label": "Cross-reference questions cover at least 5 of 6 sub-types", "auto": "questions_cross_subtypes",
              "note": "One PDF makes different_documents impossible; contradictory can be skipped if the corpus has none, but say so in the README."},
             {"label": "Stress-test questions cover at least 8 of 11 sub-types", "auto": "questions_stress_subtypes"},
-            {"label": "questions.json uploaded to Teams with the counts per category", "done": false,
-             "note": "Set to true once posted on Teams."}
+            {"label": "questions.json uploaded to Teams with the counts per category", "done": true}
           ]
         },
         {
