@@ -7,6 +7,7 @@ Members:
 - Sai Prasad Bandari
 - Prodipta Paul
 
+
 ## What it does
 
 A RAG app over the EU AI Act (Regulation (EU) 2024/1689). Questions are answered by
@@ -58,11 +59,21 @@ reaches $5. Embedding the full corpus costs well under $0.01; a new question cos
 $0.0004 (re-ranking runs locally for free). Off-topic questions (no passage above the
 similarity threshold) skip re-ranking and the LLM call.
 
-## Re-ranking and caching
+## Hybrid search, re-ranking and caching
 
-- **Re-ranking** (`app/rerank.py`): FAISS pulls 15 candidates, then the `BAAI/bge-reranker-base`
-  cross-encoder scores each one from 0 to 1 for how well it answers the question. Passages
-  scoring at least 0.1 are kept, best 8 go to the answer prompt. It runs on your GPU (Apple
+- **Hybrid search** (`app/hybrid.py`): our corpus is a legal text full of exact terms (article
+  numbers, "Annex III", defined terms) that pure vector search can miss — the `exact_term`
+  stress-test category in `data/questions.json` targets exactly this. FAISS (semantic) and BM25
+  (keyword) each retrieve their own top-15 candidates, merged by Reciprocal Rank Fusion (rank
+  position, not raw score — FAISS cosine and BM25 scores live on different scales). Runs entirely
+  locally, no API calls. Toggle with `USE_BM25` in `app/rag.py`. Keyword-only hits are passed to
+  the re-ranker like any other candidate (and labelled "keyword match" in the sources panel), but
+  they don't count towards the off-topic check: BM25 matches common words in almost any question,
+  so a question is only treated as on-topic when a vector match clears the similarity threshold.
+- **Re-ranking** (`app/rerank.py`): the merged FAISS + BM25 candidates (up to 30) are scored by the
+  `BAAI/bge-reranker-base` cross-encoder from 0 to 1 for how well they answer the question.
+  Passages scoring at least 0.1 are kept, and the context is built from the best of them (see
+  "Keeping the answer prompt small" below). It runs on your GPU (Apple
   Silicon via MPS, NVIDIA via CUDA, CPU otherwise) with no API calls. The model (~1.1 GB)
   downloads from Hugging Face on first start; after that it loads in ~10 s and scores a question
   in under a second. Without `sentence-transformers` installed, re-ranking is skipped and FAISS

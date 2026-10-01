@@ -14,6 +14,7 @@ from app.utils import (CACHE_DIR, CHUNK_OVERLAP, CHUNK_SIZE, CostTracker, DiskCa
                        fingerprint, format_citation, normalize_query, split_sentences)
 from app.reflection import REFLECTION_VERSION, assess
 from app.rerank import load_reranker
+from app.hybrid import BM25Index, reciprocal_rank_fusion
 
 CHAT_MODEL = "gpt-4o-mini"
 EMBED_BATCH_SIZE = 50
@@ -28,6 +29,11 @@ MIN_SCORES = {"BAAI/bge-base-en-v1.5": 0.60}
 # FAISS pulls this many candidates; the re-ranker keeps the best TOP_K of them
 # (relevance cut-off lives with each re-ranker in app/rerank.py)
 RERANK_CANDIDATES = 15
+# hybrid search: merge FAISS with BM25 keyword search via RRF before re-ranking.
+# Our corpus is a legal text full of exact terms (article numbers, "Annex III", etc.)
+# that pure vector search can miss — see the "exact_term" stress-test category.
+USE_BM25 = True
+BM25_CANDIDATES = 15
 NO_INFO = "I don't have information about that in the provided documents."
 TRUNCATED_NOTE = "\n\n*(Answer cut off at the length limit.)*"
 # bump when question or answer handling changes so cached answers are regenerated
@@ -431,6 +437,7 @@ class RAG:
         self.top_k = top_k
         self.reranker = load_reranker()
         reranker_id = (self.reranker.name, self.reranker.min_relevance) if self.reranker else None
+        self.bm25 = BM25Index(retriever.chunks) if USE_BM25 else None
         # local/hybrid clients (app/local_models.py) say which models they really run
         embedding_id = getattr(client, "embedding_model", EMBEDDING_MODEL)
         self.min_score = MIN_SCORES.get(embedding_id, MIN_SCORE)
@@ -441,7 +448,8 @@ class RAG:
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
-                                         fingerprint(index_id, embedding_id, RERANK_CANDIDATES))
+                                         fingerprint(index_id, embedding_id, RERANK_CANDIDATES,
+                                                     USE_BM25, BM25_CANDIDATES, self.min_score))
         self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, embedding_id, chat_id, SYSTEM_PROMPT, top_k, self.min_score, MAX_TOKENS,
@@ -457,9 +465,23 @@ class RAG:
         key = normalize_query(question)
         hit = self.retrieval_cache.get(key)
         if hit is not None:
-            return [{**self.retriever.chunks[i], "score": s} for i, s in hit]
-        retrieved = self.retriever.search(question, k=RERANK_CANDIDATES)
-        self.retrieval_cache.set(key, [[c["id"], c["score"]] for c in retrieved])
+            return [{**self.retriever.chunks[i], "score": s, **({"keyword_only": True} if keyword_only else {})}
+                    for i, s, keyword_only in hit]
+
+        vector_hits = self.retriever.search(question, k=RERANK_CANDIDATES)
+        if self.bm25:
+            keyword_hits = self.bm25.search(question, k=BM25_CANDIDATES)
+            retrieved = reciprocal_rank_fusion(vector_hits, keyword_hits)
+            for c in retrieved:
+                if "score" not in c:
+                    # a BM25-only hit has no cosine similarity. It sits exactly at this model's
+                    # off-topic threshold so it always reaches the re-ranker, which judges it like
+                    # any other candidate, and is flagged so no made-up similarity is displayed
+                    c["score"], c["keyword_only"] = self.min_score, True
+        else:
+            retrieved = vector_hits
+
+        self.retrieval_cache.set(key, [[c["id"], c["score"], c.get("keyword_only", False)] for c in retrieved])
         return retrieved
 
     def rerank(self, question: str, candidates: list[dict]) -> list[dict]:
@@ -587,8 +609,10 @@ class RAG:
         yield "stage", "searching"
         # nothing left after removing instructions: there's no question to search for
         candidates = self.retrieve(standalone) if standalone else []
-        # only re-rank passages that are at least loosely similar; off-topic stops here
-        plausible = relevant_chunks(candidates, self.min_score)
+        # off-topic stops here. Decided on meaning: BM25 matches common words in almost any
+        # question, so keyword hits alone don't make a question on-topic
+        on_topic = any(not c.get("keyword_only") and c["score"] >= self.min_score for c in candidates)
+        plausible = relevant_chunks(candidates, self.min_score) if on_topic else []
         if self.reranker and plausible:
             yield "stage", "reranking"
             ranked = self.rerank(standalone, plausible)

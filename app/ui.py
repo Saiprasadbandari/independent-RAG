@@ -84,6 +84,8 @@ def format_sources_panel(turns: list[dict], index: int | None) -> tuple[str, str
         relevance = f" · relevance {c['relevance']:.2f}" if "relevance" in c else ""
         if "neighbour_of" in c:
             origin = f" · continues [{ids.get(c['neighbour_of'], '?')}]"
+        elif c.get("keyword_only"):
+            origin = " · keyword match (BM25)"
         else:
             origin = f" · similarity {c['score']:.2f}"
         trimmed = " · ✂️ trimmed to relevant sentences" if c.get("trimmed") else ""
