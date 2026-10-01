@@ -7,8 +7,12 @@
 The local pieces mimic the two OpenAI calls the app makes, embeddings.create and
 chat.completions.create (including stream=True), so the rest of the app doesn't care
 which mode it runs in. Local calls report 0 tokens, so they cost $0 in the tracker.
+Tool calls (the agent) use Qwen's own format: the tools go into its chat template and
+its <tool_call>{...}</tool_call> replies come back as OpenAI-style tool_calls.
 """
 
+import json
+import re
 from threading import Thread
 from types import SimpleNamespace as NS
 
@@ -19,6 +23,7 @@ from app.utils import DATA_DIR
 LOCAL_EMBED_MODEL = "BAAI/bge-base-en-v1.5"
 LOCAL_CHAT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 MODES = ("api", "hybrid", "local")
+TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
 
 class LocalEmbeddings:
@@ -32,6 +37,48 @@ class LocalEmbeddings:
         return NS(data=[NS(embedding=v.tolist()) for v in vectors], usage=NS(prompt_tokens=0))
 
 
+def template_messages(messages: list[dict]) -> list[dict]:
+    """Qwen's template expects tool-call arguments as a dict; OpenAI messages carry a JSON string."""
+    out = []
+    for m in messages:
+        if m.get("tool_calls"):
+            calls = [{**c, "function": {**c["function"], "arguments": json.loads(c["function"]["arguments"])}}
+                     for c in m["tool_calls"]]
+            m = {**m, "content": m.get("content") or "", "tool_calls": calls}
+        out.append(m)
+    return out
+
+
+def tool_calls(text: str) -> list | None:
+    calls = []
+    for i, raw in enumerate(TOOL_CALL_RE.findall(text)):
+        try:
+            call = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        calls.append(NS(id=f"call_{i}", type="function", function=NS(
+            name=call.get("name", ""), arguments=json.dumps(call.get("arguments", {})))))
+    return calls or None
+
+
+class LocalMessage:
+    """Shaped like the OpenAI SDK's message: .content, .tool_calls, .model_dump()."""
+
+    def __init__(self, text: str, calls: list | None):
+        self.role = "assistant"
+        self.refusal = None
+        self.tool_calls = calls
+        self.content = TOOL_CALL_RE.sub("", text).strip() if calls else text
+
+    def model_dump(self, exclude_unset: bool = True) -> dict:
+        d = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            d["tool_calls"] = [{"id": c.id, "type": "function",
+                                "function": {"name": c.function.name, "arguments": c.function.arguments}}
+                               for c in self.tool_calls]
+        return d
+
+
 class LocalChatCompletions:
     def __init__(self, model_name: str = LOCAL_CHAT_MODEL):
         import torch
@@ -42,8 +89,9 @@ class LocalChatCompletions:
         self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16).to(self.device).eval()
 
     def create(self, model: str, messages: list[dict], max_tokens: int = 300, temperature: float = 0,
-               stream: bool = False, **_):
-        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+               stream: bool = False, tools: list[dict] | None = None, **_):
+        prompt = self.tokenizer.apply_chat_template(template_messages(messages), tools=tools,
+                                                    tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         options = dict(**inputs, max_new_tokens=max_tokens, do_sample=False,
                        pad_token_id=self.tokenizer.eos_token_id)
@@ -57,7 +105,8 @@ class LocalChatCompletions:
         new = out[0][inputs.input_ids.shape[1]:]
         text = self.tokenizer.decode(new, skip_special_tokens=True).strip()
         finish = "length" if len(new) >= max_tokens else "stop"
-        return NS(choices=[NS(message=NS(content=text, refusal=None), finish_reason=finish)],
+        message = LocalMessage(text, tool_calls(text) if tools else None)
+        return NS(choices=[NS(message=message, finish_reason=finish)],
                   usage=NS(prompt_tokens=0, completion_tokens=0))
 
     def _stream(self, options: dict, max_tokens: int):

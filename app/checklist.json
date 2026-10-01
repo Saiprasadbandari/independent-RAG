@@ -131,7 +131,8 @@
             {"label": "Two more tools of your own (5 in total), justified in the README", "auto": "five_tools"},
             {"label": "Recovery: rephrase and retry with a retry limit", "done": true},
             {"label": "send_message as an agent tool, behind human approval", "auto": "send_message_tool"},
-            {"label": "Injection against actions: test chunk, fake send that declines, before/after", "done": false}
+            {"label": "Injection against actions: test chunk, fake send that declines, before/after", "done": true,
+             "note": "Local-mode results in the README; add the api-mode run."}
           ]
         },
         {
