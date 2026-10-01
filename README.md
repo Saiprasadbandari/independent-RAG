@@ -114,6 +114,39 @@ similarity threshold) skip re-ranking and the LLM call.
   confidence band right as often as it claims). `--no-rerank`, `--no-bm25` and `--no-rewrite`
   switch one improvement off; `--ablation` measures them cumulatively.
 
+### Confidence threshold
+
+`MIN_RELEVANCE` in `app/rerank.py` is the top re-ranker score a question's best passage needs to
+reach the answer prompt; below it, the question is refused without calling the model. Moved from
+0.1 to 0.05 after 0.1 wrongly refused a real answerable question (local mode, best passage 0.097):
+
+| Threshold | Correct refusals | Wrong refusals |
+|---|---|---|
+| local (0.1, old) | 2/4 should-refuse | 1/38 answerable |
+| local (0.05) | 2/4 should-refuse | 0/38 answerable |
+| api (0.05) | 2/6 should-refuse | 0/12 answerable |
+
+A few should-refuse questions still score high regardless of threshold (0.999/0.985 in api mode,
+0.999/0.22 in local mode) — that's the model citing a plausible-but-wrong passage, not a threshold
+problem, so no cutoff fixes it without also refusing answerable questions. It's caught separately
+by the uncited-answer confidence cap, not by this constant. Full details in `scripts/FAILURE_LOG.md`.
+
+### Ablation
+
+Each retrieval stage added cumulatively, measured with `scripts/eval_runner.py --ablation`:
+
+| Version | Recall@1 | Recall@5 | MRR |
+|---|---|---|---|
+| Vector only | 0.38 | 0.67 | 0.56 |
+| + re-ranking | 0.79 | 0.83 | 0.84 |
+| + BM25 (hybrid) | 0.79 | 0.83 | 0.85 |
+
+Re-ranking is the big jump (recall@1 more than doubles); BM25 on top gives a smaller but real MRR
+gain by fixing keyword-heavy questions vector search misses on its own. Kept both: the hybrid
+(vector + BM25 + re-ranking) pipeline is what `app/rag.py` runs by default (`USE_BM25` /
+`USE_RERANK` in `app/rag.py` toggle either off). Numbers above are api mode, `data/day2_final.json`
+(12-question sample); local mode numbers on the full 38-question set are in `scripts/FAILURE_LOG.md`.
+
 ## Run modes
 
 `uv run python -m app.main --mode <mode>` (also `scripts.eval_runner --mode`) picks where each step runs:
@@ -212,3 +245,49 @@ answer; the only defence against that is controlling what gets indexed.
   searching, re-ranking and trimming, writing), then the answer streams in as it's written.
 - **Export**: download the whole conversation or one answer (click it first; the latest answer
   otherwise) as .txt or .pdf.
+
+## RAG demo questions
+
+Six questions covering the main capabilities, with the expected answer and the page(s) the
+answer should cite. All are in `data/questions.json` (the first five are the `priority` set).
+
+1. **Factual** — "What is the maximum administrative fine for non-compliance with the prohibited
+   AI practices in Article 5?"
+   Expected: up to EUR 35,000,000 or 7% of worldwide annual turnover, whichever is higher.
+   Page: 115.
+
+2. **Cross-reference (adjacent chunks)** — "What must a deployer's fundamental rights impact
+   assessment for a high-risk AI system cover, and when relative to first use must it be carried
+   out?"
+   Expected: the deployer's processes for using the system, period/frequency of use, affected
+   persons, specific risks of harm, human oversight measures and a complaint/redress plan — carried
+   out before the system is first used.
+   Pages: 69, 70.
+
+3. **Cross-reference (same document)** — "If an AI system is classified as high-risk under
+   Article 6, what is the maximum fine its provider risks for failing to meet the resulting
+   obligations?"
+   Expected: up to EUR 15,000,000 or 3% of worldwide annual turnover, whichever is higher (Article
+   6 classification triggers the Section 2/3 obligations, whose breach falls under Article 99(4)).
+   Pages: 53, 115.
+
+4. **Stress-test (yes/no)** — "Does the AI Act apply to AI systems developed and used exclusively
+   for military or national security purposes?"
+   Expected: no — the Regulation explicitly excludes AI systems used exclusively for military,
+   defence or national security purposes.
+   Page: 45.
+
+5. **Stress-test (table/list)** — "What are the 8 areas of high-risk AI system use cases listed in
+   Annex III?"
+   Expected: biometrics; critical infrastructure; education and vocational training; employment,
+   workers' management and access to self-employment; access to essential private and public
+   services; law enforcement; migration, asylum and border control management; administration of
+   justice and democratic processes.
+   Pages: 127, 128, 129.
+
+6. **Out-of-scope (refusal)** — "What are the specific data breach notification deadlines under
+   the GDPR?"
+   Expected: refused. GDPR is a separate regulation from the EU AI Act and isn't in this corpus —
+   a good test of refusal since the question sounds on-topic (EU tech regulation) but isn't
+   answerable from the indexed document.
+   Page: none (correct behaviour is no citation, no answer).

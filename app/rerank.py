@@ -19,11 +19,13 @@ RERANK_MODEL = "BAAI/bge-reranker-base"
 RERANK_MAX_LENGTH = 512
 RERANK_BATCH_SIZE = 16
 # Confidence threshold: passages need at least this relevance to reach the answer prompt, and a
-# question whose best passage scores below it is refused without calling the model. Chosen from
-# the eval runner's threshold table (local mode, 44 questions): 0.05 refuses as many
-# out-of-scope / on-topic-unanswerable questions as 0.1 (2 of 4) with no wrong refusals, where
-# 0.1 wrongly refused a casually worded answerable question (best passage 0.097). Re-check it on
-# the api-mode table.
+# question whose best passage scores below it is refused without calling the model. 0.1 wrongly
+# refused a casually worded answerable question (best passage 0.097, local mode). 0.05 fixes that
+# with zero wrong refusals, validated in both local mode (FAILURE_LOG.md) and api mode
+# (data/day2_final.json: 12 real answerable questions all scored >= 0.516). A handful of
+# should-refuse questions still score high (0.999, 0.985) in both modes regardless of threshold —
+# that's the model citing a plausible-but-wrong passage, not a threshold problem; it's caught
+# separately by the uncited-answer confidence cap in app/rag.py, not by this constant.
 MIN_RELEVANCE = 0.05
 
 

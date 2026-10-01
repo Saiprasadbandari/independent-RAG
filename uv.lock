@@ -479,6 +479,7 @@ dependencies = [
     { name = "pymupdf" },
     { name = "python-dotenv" },
     { name = "rank-bm25" },
+    { name = "requests" },
     { name = "sentence-transformers" },
     { name = "simpleeval" },
 ]
@@ -498,6 +499,7 @@ requires-dist = [
     { name = "pymupdf", specifier = ">=1.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "requests", specifier = ">=2.30" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "simpleeval", specifier = ">=1.0" },
 ]

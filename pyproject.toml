@@ -16,6 +16,7 @@ dependencies = [
     "sentence-transformers>=3.0",  # cross-encoder re-ranking
     "rank-bm25>=0.2.2",            # hybrid search
     "simpleeval>=1.0",             # agent calculator tool
+    "requests>=2.30",              # send_message tool (Teams webhook fallback)
 ]
 
 [dependency-groups]
