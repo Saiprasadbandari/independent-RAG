@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 from dataclasses import asdict
 from datetime import datetime
@@ -12,6 +13,7 @@ from app.rag import RAG, cited_refs
 from app.utils import DATA_DIR, format_citation, format_retrieved
 
 FEEDBACK_PATH = DATA_DIR / "feedback.jsonl"
+N_SUGGESTIONS = 3
 
 EXAMPLES = [
     "What AI practices are prohibited under the AI Act?",
@@ -19,6 +21,61 @@ EXAMPLES = [
     "What are the transparency obligations for providers of general-purpose AI models?",
     "What is the best pizza topping?",
 ]
+
+
+def load_question_bank() -> list[dict]:
+    """The eval set doubles as a free source of 'related question' suggestions --
+    no extra API call, just picks from questions we already wrote."""
+    path = DATA_DIR / "questions.json"
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+QUESTION_BANK = load_question_bank()
+
+
+def suggest_followups(question: str, asked: set[str], n: int = N_SUGGESTIONS) -> list[str]:
+    """Free, zero-cost 'related questions' (Perplexity's 'Related' row, without the LLM call):
+    score every bank question by shared keywords with the one just asked, using the same
+    tokenizer BM25 already uses, so it generalizes to free-form questions not in the bank."""
+    from app.hybrid import tokenize
+
+    asked_words = set(tokenize(question))
+    scored = []
+    for q in QUESTION_BANK:
+        if q["question"] in asked or q["question"] == question:
+            continue
+        overlap = len(asked_words & set(tokenize(q["question"])))
+        scored.append((overlap, q["question"]))
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    picks = [q for score, q in scored[:n] if score > 0]
+    if len(picks) < n:  # not enough overlap found -- top up with a random unused sample
+        rest = [q["question"] for q in QUESTION_BANK
+                if q["question"] not in asked and q["question"] != question and q["question"] not in picks]
+        random.shuffle(rest)
+        picks += rest[:n - len(picks)]
+    while len(picks) < n:
+        picks.append("")  # pad so the fixed set of buttons always has something to bind to
+    return picks[:n]
+
+
+def load_ablation_table() -> str:
+    """Static table from the one-time day-2 analysis (scripts/finish_day2.py).
+    Not live -- re-run that script and refresh this if the pipeline changes."""
+    path = DATA_DIR / "day2_final.json"
+    if not path.exists():
+        return "_Not run yet — see `scripts/finish_day2.py`._"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    ablation = data.get("ablation", {})
+    if not ablation:
+        return "_Not run yet._"
+    rows = [f"| {name} | {s['recall@1']:.0%} | {s['recall@5']:.0%} | {s['mrr']:.3f} |"
+            for name, s in ablation.items()]
+    threshold = data.get("confidence_threshold")
+    threshold_line = f"\n\nConfidence threshold: **{threshold:.3f}**" if threshold else ""
+    return ("| Version | Recall@1 | Recall@5 | MRR |\n|---|---|---|---|\n" + "\n".join(rows) + threshold_line)
 
 CONFIDENCE_ICONS = {"high": "🟢", "medium": "🟡", "low": "🔴"}
 # shown in the answer bubble while RAG.ask_stream works through its stages
@@ -121,6 +178,26 @@ class ChatHandlers:
             this = f"${answer['cost']:.5f}{tokens}"
         return f"This answer: {this} · {self.rag.tracker.summary()}"
 
+    def cost_table(self, turn: dict | None = None) -> str:
+        """Live cost, as a small table instead of one line -- updates after every answer."""
+        tracker = self.rag.tracker
+        this_cost = "$0.00000"
+        this_tokens = "—"
+        if turn and "answer" in turn:
+            answer = turn["answer"]
+            this_cost = "$0 (cached)" if answer["cached"] else f"${answer['cost']:.5f}"
+            if answer.get("input_tokens"):
+                this_tokens = f"{answer['input_tokens']} in / {answer['output_tokens']} out"
+        remaining = max(tracker.remaining, 0)
+        rows = [
+            ("This query", this_cost),
+            ("Tokens", this_tokens),
+            ("Total spent", f"${tracker.total:.4f}"),
+            ("Budget left", f"${remaining:.2f} / ${tracker.budget:.0f}"),
+            ("API calls", str(tracker.calls)),
+        ]
+        return "| | |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
+
     def ask(self, message: str, chat: list, turns: list):
         """Generator: the reply bubble shows each stage, then the answer as it streams in."""
         if not message or not message.strip():
@@ -129,7 +206,8 @@ class ChatHandlers:
         history = [(t["answer"]["standalone_question"] or t["question"], t["answer"]["text"])
                    for t in turns if "answer" in t]
         chat = chat + [{"role": "user", "content": question}, {"role": "assistant", "content": "⏳ Starting…"}]
-        waiting = (gr.skip(),) * 5
+        # skipped during streaming: turns, index, sources, others, cost_line, cost_table, 3x suggestion button
+        waiting = (gr.skip(),) * 9
         yield ("", list(chat), *waiting)
 
         try:
@@ -149,7 +227,13 @@ class ChatHandlers:
         turns = turns + [turn]
         chat[-1] = {"role": "assistant", "content": format_chat_answer(turn)}
         index = len(turns) - 1
-        yield (gr.skip(), chat, turns, index, *format_sources_panel(turns, index), self.cost_line(turn))
+
+        asked = {t["question"] for t in turns}
+        picks = suggest_followups(question, asked)
+        suggestion_updates = [gr.update(value=p, visible=bool(p)) for p in picks]
+
+        yield (gr.skip(), chat, turns, index, *format_sources_panel(turns, index),
+              self.cost_line(turn), self.cost_table(turn), *suggestion_updates)
 
     def select(self, turns: list, evt: gr.SelectData):
         index = evt.index if isinstance(evt.index, int) else evt.index[0]
@@ -195,7 +279,19 @@ class ChatHandlers:
                           f"eu-ai-act-answer-{index + 1}"))
 
     def clear(self):
-        return [], [], None, EMPTY_SOURCES, "", None, self.rag.tracker.summary()
+        hidden = gr.update(value="", visible=False)
+        return ([], [], None, EMPTY_SOURCES, "", None, self.rag.tracker.summary(),
+               self.cost_table(None), hidden, hidden, hidden)
+
+    def pick_suggestion(self, label: str):
+        return label
+
+
+MINIMAL_CSS = """
+.gradio-container { max-width: 1100px !important; margin: auto; }
+footer { display: none !important; }
+#suggest-row button { font-size: 0.85em; text-align: left; white-space: normal; height: auto; }
+"""
 
 
 def build_ui(rag: RAG) -> gr.Blocks:
@@ -205,40 +301,52 @@ def build_ui(rag: RAG) -> gr.Blocks:
         turns = gr.State([])
         selected = gr.State(None)
 
-        gr.Markdown("# EU AI Act Assistant\nAsk questions about Regulation (EU) 2024/1689. "
-                    "Follow-up questions use the conversation so far. Answers cite the pages they come from.")
+        gr.Markdown("# EU AI Act Assistant\n"
+                    "Regulation (EU) 2024/1689 · follow-ups work · answers cite the pages they come from")
 
         with gr.Row():
             with gr.Column(scale=3):
-                chat = gr.Chatbot(label="Conversation", height=560, layout="bubble",
+                chat = gr.Chatbot(label=None, height=520, layout="bubble", show_label=False,
                                   feedback_options=("Like", "Dislike"), buttons=["copy"],
                                   placeholder="Ask about the EU AI Act. Follow-ups like "
                                               "“what about the second one?” work too.")
                 message = gr.Textbox(show_label=False, lines=1, max_lines=4, submit_btn="Ask",
                                      placeholder="Ask a question or a follow-up…")
-                gr.Examples(EXAMPLES, inputs=message)
+
+                gr.Markdown("**Related**", elem_id="suggest-label")
+                with gr.Row(elem_id="suggest-row"):
+                    suggestion_buttons = [gr.Button("", visible=False, size="sm") for _ in range(N_SUGGESTIONS)]
+
+                with gr.Accordion("Example questions", open=False):
+                    gr.Examples(EXAMPLES, inputs=message)
+
             with gr.Column(scale=2):
-                sources = gr.Markdown(EMPTY_SOURCES, height=560)
-                with gr.Accordion("Other retrieved candidates (not sent to the model)", open=False):
-                    others = gr.Markdown()
+                with gr.Tabs():
+                    with gr.Tab("Cost — live"):
+                        cost_table = gr.Markdown(handlers.cost_table(None))
+                    with gr.Tab("Sources"):
+                        sources = gr.Markdown(EMPTY_SOURCES, height=440)
+                        with gr.Accordion("Other retrieved candidates", open=False):
+                            others = gr.Markdown()
 
         with gr.Row():
-            clear = gr.Button("Clear conversation")
-        with gr.Accordion("Export", open=False):
-            gr.Markdown("Click an answer in the conversation to pick it; otherwise the latest answer is exported.")
-            with gr.Row():
-                chat_txt = gr.Button("Conversation (.txt)")
-                chat_pdf = gr.Button("Conversation (.pdf)")
-                answer_txt = gr.Button("Selected answer (.txt)")
-                answer_pdf = gr.Button("Selected answer (.pdf)")
-            export_file = gr.File(label="Download", interactive=False)
-        cost = gr.Markdown(rag.tracker.summary())
+            clear = gr.Button("Clear conversation", size="sm")
+            chat_txt = gr.Button("Export .txt", size="sm")
+            chat_pdf = gr.Button("Export .pdf", size="sm")
+            answer_txt = gr.Button("Export selected answer .txt", size="sm")
+            answer_pdf = gr.Button("Export selected answer .pdf", size="sm")
+        export_file = gr.File(label="Download", interactive=False)
+        cost = gr.Markdown(rag.tracker.summary(), visible=False)  # kept for the clear() wiring below
 
-        message.submit(handlers.ask, [message, chat, turns],
-                       [message, chat, turns, selected, sources, others, cost], api_name="ask")
+        gr.Markdown("---")
+        with gr.Accordion("Ablation table — RAG day 2 (vector-only → +re-ranking → +BM25)", open=True):
+            gr.Markdown(load_ablation_table())
+
+        ask_outputs = [message, chat, turns, selected, sources, others, cost, cost_table, *suggestion_buttons]
+        message.submit(handlers.ask, [message, chat, turns], ask_outputs, api_name="ask")
         chat.select(handlers.select, [turns], [selected, sources, others])
         chat.like(handlers.feedback, [turns], None)
-        clear_outputs = [chat, turns, selected, sources, others, export_file, cost]
+        clear_outputs = [chat, turns, selected, sources, others, export_file, cost, cost_table, *suggestion_buttons]
         clear.click(handlers.clear, None, clear_outputs)
         # the chatbot's own 🗑 icon must forget the conversation too, or follow-ups use stale history
         chat.clear(handlers.clear, None, clear_outputs)
@@ -246,5 +354,8 @@ def build_ui(rag: RAG) -> gr.Blocks:
         chat_pdf.click(lambda t: handlers.export_conversation(t, "pdf"), [turns], export_file)
         answer_txt.click(lambda t, s: handlers.export_answer(t, s, "txt"), [turns, selected], export_file)
         answer_pdf.click(lambda t, s: handlers.export_answer(t, s, "pdf"), [turns, selected], export_file)
+        for btn in suggestion_buttons:
+            btn.click(handlers.pick_suggestion, [btn], [message]).then(
+                handlers.ask, [message, chat, turns], ask_outputs)
 
     return demo

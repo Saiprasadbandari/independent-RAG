@@ -20,7 +20,9 @@ from dotenv import load_dotenv
 from app.embedding import Retriever, build_index, index_exists, load_index
 from app.local_models import MODES, make_client
 from app.rag import RAG
-from app.ui import build_ui
+import gradio as gr
+
+from app.ui import MINIMAL_CSS, build_ui
 from app.utils import CostTracker
 
 
@@ -55,7 +57,7 @@ def main():
 
     retriever = Retriever(client, index, chunks, tracker)
     rag = RAG(client, retriever, tracker)
-    build_ui(rag).launch(server_port=args.port, share=args.share)
+    build_ui(rag).launch(server_port=args.port, share=args.share, css=MINIMAL_CSS, theme=gr.themes.Soft())
 
 
 if __name__ == "__main__":
