@@ -113,6 +113,23 @@ similarity threshold) skip re-ranking and the LLM call.
   confidence band right as often as it claims). `--no-rerank`, `--no-bm25` and `--no-rewrite`
   switch one improvement off; `--ablation` measures them cumulatively.
 
+### Confidence threshold
+
+`MIN_RELEVANCE` in `app/rerank.py` is the top re-ranker score a question's best passage needs to
+reach the answer prompt; below it, the question is refused without calling the model. Moved from
+0.1 to 0.05 after 0.1 wrongly refused a real answerable question (local mode, best passage 0.097):
+
+| Threshold | Correct refusals | Wrong refusals |
+|---|---|---|
+| local (0.1, old) | 2/4 should-refuse | 1/38 answerable |
+| local (0.05) | 2/4 should-refuse | 0/38 answerable |
+| api (0.05) | 2/6 should-refuse | 0/12 answerable |
+
+A few should-refuse questions still score high regardless of threshold (0.999/0.985 in api mode,
+0.999/0.22 in local mode) — that's the model citing a plausible-but-wrong passage, not a threshold
+problem, so no cutoff fixes it without also refusing answerable questions. It's caught separately
+by the uncited-answer confidence cap, not by this constant. Full details in `scripts/FAILURE_LOG.md`.
+
 ## Run modes
 
 `uv run python -m app.main --mode <mode>` (also `scripts.eval_runner --mode`) picks where each step runs:
