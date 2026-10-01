@@ -211,6 +211,13 @@ fake context in the question, forged citations, a follow-up hijack, and a poison
 in an in-memory copy of the index. Content inside a poisoned passage can still end up in an
 answer; the only defence against that is controlling what gets indexed.
 
+**On the course's suggested `INJECTION_TEST` flag + `<context>` delimiter convention**: checked
+both the RAG and Agentic AI crash-course slide decks directly — the RAG deck's edge-case table
+(p.76) calls prompt injection a "known unsolved problem, do your best" and offers that flag +
+delimiter pattern as one example approach, not a requirement. We use a different, verified one
+instead (`sanitize_question`, above): before/after, resistance went from 7/10 to 10/10 attacks
+once the question itself was cleaned (`scripts/FAILURE_LOG.md`).
+
 ## Using the app
 
 - **Conversation memory**: the answer model receives the last 2 exchanges (earlier answers
