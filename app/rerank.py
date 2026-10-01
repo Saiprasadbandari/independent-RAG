@@ -18,9 +18,15 @@ RERANK_MODEL = "BAAI/bge-reranker-base"
 # the cross-encoder reads question + passage together; our ~1000-char chunks fit well under this
 RERANK_MAX_LENGTH = 512
 RERANK_BATCH_SIZE = 16
-# passages need at least this relevance to reach the answer prompt. Relevant passages land
-# anywhere from ~0.4 to 1.0, on-topic-but-useless ones under ~0.05.
-MIN_RELEVANCE = 0.1
+# Confidence threshold: passages need at least this relevance to reach the answer prompt, and a
+# question whose best passage scores below it is refused without calling the model. 0.1 wrongly
+# refused a casually worded answerable question (best passage 0.097, local mode). 0.05 fixes that
+# with zero wrong refusals, validated in both local mode (FAILURE_LOG.md) and api mode
+# (data/day2_final.json: 12 real answerable questions all scored >= 0.516). A handful of
+# should-refuse questions still score high (0.999, 0.985) in both modes regardless of threshold —
+# that's the model citing a plausible-but-wrong passage, not a threshold problem; it's caught
+# separately by the uncited-answer confidence cap in app/rag.py, not by this constant.
+MIN_RELEVANCE = 0.05
 
 
 def pick_device() -> str:
