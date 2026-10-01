@@ -370,7 +370,7 @@ def build_ui(rag: RAG) -> gr.Blocks:
                 message = gr.Textbox(show_label=False, lines=1, max_lines=4, submit_btn="Ask",
                                      placeholder="Ask a question or a follow-up…")
                 agent_mode = gr.Checkbox(
-                    label="🤖 Agent mode (model chooses search / calculator / quote_exact on its own)",
+                    label="🤖 Agent mode (model chooses search, calculator, quote_exact, get_definition, date_diff on its own)",
                     value=False,
                 )
 
