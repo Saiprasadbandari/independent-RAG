@@ -101,32 +101,56 @@ similarity threshold) skip re-ranking and the LLM call.
   from (retrieval, ranking or generation). Its calibration table shows whether each confidence
   band is right as often as it claims; use it to tune the weights in `app/reflection.py`.
 
-## RAG day 2 status (confidence threshold, ablation, eval runner)
+## RAG day 2: ablation, confidence threshold, eval runner
 
-The team was asked to reduce API spend, so the numbers below are measured **only on
-questions already cached from real prior use** (`data/cache/`) — zero new API calls were
-made to produce them. Run `python -m scripts.cache_only_eval` to reproduce; it skips any
-question that isn't already cached rather than making a live call.
+Numbers below are real, measured with `scripts/finish_day2.py` on a 12-question sample
+(kept small deliberately — the team was asked to watch API spend). Total cost for this run:
+42 API calls, $0.000018.
 
-- **Retrieval quality (7 of 48 questions happened to be cached):** recall@1 = recall@5 =
-  71%, MRR = 0.738. Real numbers, small sample — not the full 48-question picture yet.
-- **Confidence threshold:** not yet computable. None of the currently-cached questions that
-  *should* be refused (out-of-scope/ambiguous) made it far enough into the pipeline to get a
-  re-rank score — the one cached example ("what's the weather today") was filtered out
-  before re-ranking, which is correct behaviour but leaves nothing to set a threshold
-  against. Needs a handful of targeted live calls on refuse-group questions to complete.
-- **Ablation table (vector-only / +reranking / +BM25):** not yet run for real. The cache
-  only reflects the one pipeline configuration actually used in production (hybrid +
-  re-ranking) — isolating "vector only" and "+reranking only" rows needs fresh retrieval per
-  config, which can't be done from cache alone. `scripts/eval_runner.py --ablation` is built
-  and mechanically verified (see its local mock test), just not run live yet.
-- **Prompt injection test, regression check:** built and run (`scripts/injection_test.py`,
-  `scripts/regression.py`) — results pending from whoever ran them last.
+### Ablation table
 
-**Next step, once the team's spend situation is resolved:** a small, targeted live run
-(the missing refuse-group questions for the threshold, plus the two ablation configs) would
-complete this — estimated at well under 200 total API calls, all cheap embedding-only
-requests.
+Each row builds on the one above it. Retrieval-only, no generation, on the same 12 questions.
+
+| Version | Recall@1 | Recall@5 | MRR |
+|---|---|---|---|
+| Vector only | 38% | 67% | 0.559 |
+| + re-ranking | 79% | 83% | 0.841 |
+| + BM25 (hybrid) | 79% | 83% | 0.853 |
+
+**What we kept and why:** re-ranking is the single biggest win (recall@1 roughly doubles,
+38% → 79%) — FAISS alone often puts the right passage in the top 5 but not top 1, and the
+cross-encoder fixes that. BM25 adds a smaller but real MRR gain (0.841 → 0.853) and is what
+specifically fixes exact-term questions (article numbers, "Annex III") that embeddings alone
+miss — see `scripts/FAILURE_LOG.md` for a concrete example this fixed.
+
+### Confidence threshold
+
+Computed from the re-ranker's top score per question, across all 6 out-of-scope/ambiguous/
+on_topic_unanswerable questions plus the 12-question answer-group above.
+
+**Threshold: 0.757** (midpoint between the highest refuse-group score and the lowest
+answer-group score).
+
+**Honest limitation found:** 3 of the 6 refuse-group questions scored *above* a typical
+threshold (0.999, 0.985, 0.711) — they read as topically close enough to the corpus that the
+re-ranker rates them highly even though they should be refused (e.g. an ambiguous question
+about "rules on biometric systems," which legitimately resembles real corpus content). A
+single global threshold doesn't cleanly separate these cases; the two genuinely out-of-scope
+questions ("weather," "Ballon d'Or") scored 0.000, exactly as expected. This is a known,
+reported limitation, not a hidden one — see `scripts/FAILURE_LOG.md`.
+
+### Prompt injection test, regression check
+
+Built and run (`scripts/injection_test.py`, `scripts/regression.py`) — results pending
+confirmation from whoever ran them last.
+
+### Reproducing this
+
+```bash
+python -m scripts.finish_day2       # the 12-question sample above, ~42 calls
+python -m scripts.eval_runner --ablation   # full 42-question version, ~126 calls
+python -m scripts.cache_only_eval   # zero-cost version, reuses whatever's already cached
+```
 
 ## Using the app
 
