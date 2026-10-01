@@ -16,23 +16,25 @@ embeddings, with document + page citations. Questions outside the corpus get
 
 ## Getting started
 
-Requires Python 3.10+.
+Python 3.12, managed with [uv](https://docs.astral.sh/uv/). Install uv once
+(`curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS/Linux), then from the repo root:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync                                   # creates .venv with Python 3.12 and the locked dependencies
 echo "OPENAI_API_KEY=sk-..." > .env
 ```
 
+`uv sync` installs exactly the versions in `uv.lock`, so every teammate gets the same environment.
+To add a dependency use `uv add <package>` (it updates `pyproject.toml` and `uv.lock`; commit both).
+
 Get the `data/` folder from Teams (it's gitignored). You need at least `data/corpus.json`;
-to regenerate it from `data/sources/`, run `python scripts/extract.py`.
+to regenerate it from `data/sources/`, run `uv run python scripts/extract.py`.
 
 Build the index and start the app (run from the repo root):
 
 ```bash
-python -m app.main --build-only   # embeds corpus.json -> data/my_index.faiss + data/chunks.json
-python -m app.main                # starts Gradio on http://localhost:7860
+uv run python -m app.main --build-only   # embeds corpus.json -> data/my_index.faiss + data/chunks.json
+uv run python -m app.main                # starts Gradio on http://localhost:7860
 ```
 
 The index is built automatically on first launch if it's missing. Use `--rebuild` after the
@@ -83,9 +85,9 @@ similarity threshold) skip re-ranking and the LLM call.
   `data/eval/report.md` and `data/eval/results.json`.
 
   ```bash
-  python -m scripts.evaluate               # all questions
-  python -m scripts.evaluate --limit 5     # quick run
-  python -m scripts.evaluate --fresh       # ignore cached answers (costs API calls)
+  uv run python -m scripts.evaluate               # all questions
+  uv run python -m scripts.evaluate --limit 5     # quick run
+  uv run python -m scripts.evaluate --fresh       # ignore cached answers (costs API calls)
   ```
 
   The report covers retrieval quality (Hit@k, Recall@k, MRR, FAISS order vs re-ranked),
@@ -96,7 +98,7 @@ similarity threshold) skip re-ranking and the LLM call.
 
 ## Run modes
 
-`python -m app.main --mode <mode>` (also `scripts.evaluate --mode`) picks where each step runs:
+`uv run python -m app.main --mode <mode>` (also `scripts.evaluate --mode`) picks where each step runs:
 
 | mode | embeddings | answers | needs API key | cost per new question |
 |---|---|---|---|---|
@@ -148,9 +150,9 @@ The off-topic gate uses a similarity threshold per embedding model (`MIN_SCORES`
 text-embedding-3-small, 0.60 for the local bge-base, whose scores run higher.
 
 ```bash
-python -m scripts.injection_test --mode local   # 10 attacks, writes data/eval/injection.md
-python -m scripts.evaluate --mode local --fresh # full question set
-python -m scripts.regression data/eval/baseline.json data/eval/results.json   # exits 1 on regressions
+uv run python -m scripts.injection_test --mode local   # 10 attacks, writes data/eval/injection.md
+uv run python -m scripts.evaluate --mode local --fresh # full question set
+uv run python -m scripts.regression data/eval/baseline.json data/eval/results.json   # exits 1 on regressions
 ```
 
 The injection test covers instruction override, persona jailbreaks, system-prompt extraction,
