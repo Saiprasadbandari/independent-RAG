@@ -65,7 +65,7 @@ def assess_refusal(retrieved: list[dict]) -> Confidence:
 
 
 def assess(text: str, in_scope: bool, truncated: bool, context: list[dict], retrieved: list[dict],
-           cited: list[dict], invalid_refs: list[int], reranker=None) -> Confidence:
+           cited: list[dict], invalid_refs: list[int], reranker=None, forged: list | None = None) -> Confidence:
     if not in_scope:
         return assess_refusal(retrieved)
 
@@ -81,9 +81,12 @@ def assess(text: str, in_scope: bool, truncated: bool, context: list[dict], retr
     if not cited:
         signals["citation"] = 0.0
         notes.append("answer cites no passages")
-    elif invalid_refs:
+    elif invalid_refs or forged:
         signals["citation"] = 0.5
-        notes.append(f"cites passage(s) {invalid_refs} that weren't provided")
+        if invalid_refs:
+            notes.append(f"cites passage(s) {invalid_refs} that weren't provided")
+        if forged:
+            notes.append(f"⚠️ unverified source(s) {forged}: cited a page it wasn't given")
     else:
         signals["citation"] = 1.0
         notes.append(f"cites {len(cited)} passage{'s' if len(cited) != 1 else ''}")

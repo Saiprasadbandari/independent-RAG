@@ -152,6 +152,22 @@ gain by fixing keyword-heavy questions vector search misses on its own. Kept bot
 `USE_RERANK` in `app/rag.py` toggle either off). Numbers above are api mode, `data/day2_final.json`
 (12-question sample); local mode numbers on the full 38-question set are in `scripts/FAILURE_LOG.md`.
 
+### Citation check
+
+Nothing stops the model from writing `[Source: X, p. Y]` for a page it was never given —
+`cited_refs` (`app/rag.py`) already caught a `[N]` bracket number outside the range of passages
+sent, but silently dropped a source-label citation that named a real-sounding page that simply
+wasn't in context. `forged_citations` closes that gap: it compares every `[Source: ..., p. ...]`
+label the answer writes against the `(source, page)` pairs actually sent, and flags any that don't
+match. A forged citation caps the answer's citation confidence signal at 0.5 (same as an
+out-of-range `[N]`) and adds a `⚠️ unverified source(s)` note, shown automatically under the answer
+since `format_confidence` already joins every confidence note — no UI changes needed.
+
+`scripts/eval_runner.py` reports the rate across a full-mode run as `unverified_citation_rate`
+(`data/eval_results.json`, and in `data/eval/report.md`). On the 5-question api-mode sample so
+far: 0% — none of the 5 real answers cited a page they weren't given. Worth re-checking on a
+larger sample as more full-mode runs accumulate.
+
 ## Run modes
 
 `uv run python -m app.main --mode <mode>` (also `scripts.eval_runner --mode`) picks where each step runs:
