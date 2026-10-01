@@ -120,6 +120,8 @@ def format_chat_answer(turn: dict) -> str:
         parts = [answer["text"]]
         if answer["stopped_at_cap"]:
             parts.append("_(stopped at the step limit)_")
+        if answer["gave_up_retrying"]:
+            parts.append("_(gave up after repeated tool calls returned nothing useful)_")
         parts.append("**🤖 Tool calls:**\n" + format_trajectory(answer["trajectory"]))
         return "\n\n".join(p for p in parts if p)
     answer = turn["answer"]
