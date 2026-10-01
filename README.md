@@ -190,6 +190,17 @@ answer; the only defence against that is controlling what gets indexed.
   in another conversation get their own answer. The 🗑 icon or "Clear conversation" starts over.
   In `questions.json`, follow-up questions list the earlier questions in a `history` field and the
   evaluation replays them first.
+- **Moving through the regulation**: "what is the next one?", "the previous annex", "the one after
+  that" are rewritten by counting, not by the model: the last article, annex, recital, chapter or
+  section named in the conversation, plus or minus one, within the regulation's ranges (Articles
+  1–113, Annexes I–XIII, Recitals 1–180). "What does Article 41 say?" followed by "What is the next
+  one?" searches for "What does Article 42 say?".
+- **Article and annex lookup**: a question that names an article or annex also gets that unit's own
+  text, found by its heading (all 113 articles and 13 annexes are indexed). A bare number means
+  little to embeddings and also matches definition (42) or cross-references, so "What does Article
+  42 say?" used to retrieve the wrong page. When the question is mainly a lookup, the unit's text is
+  pinned first in the context; when it only mentions an article in passing, the article is an extra
+  candidate for the re-ranker. Shown as "direct lookup (Article 42)" in the sources panel.
 - **Sources**: the panel next to the chat shows the full text of every passage the model was
   given, with the cited ones marked ✅, plus their relevance and similarity scores. Click any
   earlier answer to see its sources. Candidates that didn't make it into the context are under
