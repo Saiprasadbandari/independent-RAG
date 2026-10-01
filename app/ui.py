@@ -8,6 +8,7 @@ from pathlib import Path
 import gradio as gr
 import openai
 
+from app.checklist import build_checklist_page
 from app.export import export
 from app.rag import RAG, cited_refs
 from app.send_message import send_to_teams
@@ -392,5 +393,9 @@ def build_ui(rag: RAG) -> gr.Blocks:
                            [send_status, send_preview, send_confirm, send_cancel])
         send_cancel.click(lambda: ("", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)),
                           None, [send_status, send_preview, send_confirm, send_cancel])
+
+    # a second page listing every course task, ticked automatically where the repo shows it
+    with demo.route("Project checklist", "/checklist"):
+        build_checklist_page()
 
     return demo
