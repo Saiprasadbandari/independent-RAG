@@ -1,5 +1,5 @@
 {
-  "_how_to_update": "Items with \"auto\" tick themselves from the repo and data/. For the others, set \"done\" to true when finished and commit. \"note\" is shown under the item.",
+  "_how_to_update": "Items with \"auto\" tick themselves from the repo and data/. For the others, set \"done\" to true when finished and commit. \"note\" is shown under the item. \"files\" lists where the work is: a path, \"path::function\" (or Class.method) or \"README.md#Heading\"; the page links each one to GitHub and names who wrote those lines (git blame on main). For work git can't see, add \"by\": \"Name\".",
   "sections": [
     {
       "title": "Before the week",
@@ -9,9 +9,9 @@
           "items": [
             {"label": "Team of 3 formed and registered (Microsoft Form)", "done": true},
             {"label": "Private GitHub repo, bachtn added as collaborator", "done": true},
-            {"label": ".gitignore excludes .venv/, .env and data/", "auto": "gitignore"},
-            {"label": "README with team name and members", "done": true},
-            {"label": "Python 3.12 managed with uv", "auto": "uv_python312"}
+            {"label": ".gitignore excludes .venv/, .env and data/", "auto": "gitignore", "files": [".gitignore"]},
+            {"label": "README with team name and members", "done": true, "files": ["README.md#independent-RAG"]},
+            {"label": "Python 3.12 managed with uv", "auto": "uv_python312", "files": ["pyproject.toml", ".python-version"]}
           ]
         },
         {
@@ -28,8 +28,7 @@
           "items": [
             {"label": "40 to 50 questions meeting the category minimums", "auto": "questions_minimums"},
             {"label": "Exactly 5 priority questions", "auto": "questions_priority"},
-            {"label": "Cross-reference questions cover at least 5 of 6 sub-types", "auto": "questions_cross_subtypes",
-             "note": "One PDF makes different_documents impossible; contradictory can be skipped if the corpus has none, but say so in the README."},
+            {"label": "Cross-reference questions cover at least 5 of 6 sub-types", "auto": "questions_cross_subtypes", "note": "One PDF makes different_documents impossible; contradictory can be skipped if the corpus has none, but say so in the README."},
             {"label": "Stress-test questions cover at least 8 of 11 sub-types", "auto": "questions_stress_subtypes"},
             {"label": "questions.json uploaded to Teams with the counts per category", "done": true}
           ]
@@ -48,7 +47,7 @@
         {
           "title": "Indexing and retrieval",
           "items": [
-            {"label": "Chunk corpus.json, FAISS index built once and saved to disk", "auto": "file:app/embedding.py"},
+            {"label": "Chunk corpus.json, FAISS index built once and saved to disk", "auto": "file:app/embedding.py", "files": ["app/embedding.py"]},
             {"label": "Re-ranking with a cross-encoder", "auto": "file:app/rerank.py"},
             {"label": "Hybrid search (BM25 + vectors, Reciprocal Rank Fusion)", "auto": "file:app/hybrid.py"}
           ]
@@ -56,10 +55,10 @@
         {
           "title": "Generation, memory and UI",
           "items": [
-            {"label": "Answers with citations (document + page)", "done": true},
-            {"label": "Out-of-scope questions refused", "done": true},
-            {"label": "Conversation memory: last exchanges sent with each question", "auto": "conversation_memory"},
-            {"label": "Web UI with the sources next to the answer", "done": true}
+            {"label": "Answers with citations (document + page)", "done": true, "files": ["app/rag.py::SYSTEM_PROMPT", "app/rag.py::build_context", "app/rag.py::cited_sources"]},
+            {"label": "Out-of-scope questions refused", "done": true, "files": ["app/rag.py::RAG.search_steps", "app/rag.py::is_refusal"]},
+            {"label": "Conversation memory: last exchanges sent with each question", "auto": "conversation_memory", "files": ["app/rag.py::answer_messages", "app/rag.py::condense_question", "app/rag.py::RAG.rewrite"]},
+            {"label": "Web UI with the sources next to the answer", "done": true, "files": ["app/ui.py::build_ui", "app/ui.py::format_sources_panel"]}
           ]
         },
         {
@@ -77,10 +76,8 @@
         {
           "title": "Generation",
           "items": [
-            {"label": "Confidence threshold chosen and reported (correct vs wrong refusals) in the README", "auto": "readme_threshold",
-             "note": "0.05 chosen from the local-mode table; add the api-mode table to the README."},
-            {"label": "Prompt injection test: INJECTION_TEST flag, <context> delimiters, before/after in the README", "auto": "injection_flag",
-             "note": "scripts/injection_test.py covers 10 attacks, but not the course's flag + delimiter version."}
+            {"label": "Confidence threshold chosen and reported (correct vs wrong refusals) in the README", "auto": "readme_threshold", "note": "0.05 chosen from the local-mode table; add the api-mode table to the README.", "files": ["README.md#Confidence threshold", "app/rerank.py::MIN_RELEVANCE"]},
+            {"label": "Prompt injection test: INJECTION_TEST flag, <context> delimiters, before/after in the README", "auto": "injection_flag", "note": "scripts/injection_test.py covers 10 attacks, but not the course's flag + delimiter version.", "files": ["scripts/injection_test.py", "app/rag.py::sanitize_question"]}
           ]
         },
         {
@@ -89,15 +86,15 @@
             {"label": "scripts/eval_runner.py (retrieval-only + full, recall@k, MRR, latency)", "auto": "file:scripts/eval_runner.py"},
             {"label": "data/eval_results.json from an api-mode run", "auto": "eval_results_api"},
             {"label": "3 to 4 follow-up questions with a history field in questions.json", "auto": "questions_follow_ups"},
-            {"label": "Ablation table in the README, with what you kept", "auto": "readme_ablation"},
-            {"label": "Regression check logged after each change", "auto": "failure_log_regressions"}
+            {"label": "Ablation table in the README, with what you kept", "auto": "readme_ablation", "files": ["README.md#Ablation"]},
+            {"label": "Regression check logged after each change", "auto": "failure_log_regressions", "files": ["scripts/FAILURE_LOG.md#Regression checks", "scripts/regression.py"]}
           ]
         },
         {
           "title": "README and demo",
           "items": [
-            {"label": "README: description, install, run", "auto": "readme_install"},
-            {"label": "6 RAG demo questions in the README with expected answers and pages", "auto": "readme_rag_demo"}
+            {"label": "README: description, install, run", "auto": "readme_install", "files": ["README.md#What it does", "README.md#Getting started"]},
+            {"label": "6 RAG demo questions in the README with expected answers and pages", "auto": "readme_rag_demo", "files": ["README.md#RAG demo questions"]}
           ]
         }
       ]
@@ -108,16 +105,16 @@
         {
           "title": "Tools",
           "items": [
-            {"label": "search_corpus tool with a \"No matching passages found\" threshold", "auto": "tool:search_corpus"},
-            {"label": "calculator tool (simpleeval)", "auto": "tool:calculator"},
-            {"label": "One tool of your own, justified in the README", "auto": "readme_own_tool"}
+            {"label": "search_corpus tool with a \"No matching passages found\" threshold", "auto": "tool:search_corpus", "files": ["app/tools.py::make_search_corpus"]},
+            {"label": "calculator tool (simpleeval)", "auto": "tool:calculator", "files": ["app/tools.py::calculator"]},
+            {"label": "One tool of your own, justified in the README", "auto": "readme_own_tool", "files": ["app/tools.py::quote_exact", "README.md#Agent tools"]}
           ]
         },
         {
           "title": "Agent loop and UI",
           "items": [
-            {"label": "Agent loop with a 5 to 6 step cap", "auto": "file:app/agent.py"},
-            {"label": "Agent mode in the UI with the step trace and the full trace", "auto": "ui_agent_mode"}
+            {"label": "Agent loop with a 5 to 6 step cap", "auto": "file:app/agent.py", "files": ["app/agent.py"]},
+            {"label": "Agent mode in the UI with the step trace and the full trace", "auto": "ui_agent_mode", "files": ["app/ui.py::ChatHandlers.ask", "app/ui.py::format_trajectory"]}
           ]
         }
       ]
@@ -128,29 +125,27 @@
         {
           "title": "Tools and actions",
           "items": [
-            {"label": "Two more tools of your own (5 in total), justified in the README", "auto": "five_tools"},
-            {"label": "Recovery: rephrase and retry with a retry limit", "done": true},
-            {"label": "send_message as an agent tool, behind human approval", "auto": "send_message_tool"},
-            {"label": "Injection against actions: test chunk, fake send that declines, before/after", "done": true,
-             "note": "Local-mode results in the README; add the api-mode run."}
+            {"label": "Two more tools of your own (5 in total), justified in the README", "auto": "five_tools", "files": ["app/tools.py::get_definition", "app/tools.py::date_diff"]},
+            {"label": "Recovery: rephrase and retry with a retry limit", "done": true, "files": ["app/agent.py::run_agent", "app/agent.py::RETRY_LIMIT"]},
+            {"label": "send_message as an agent tool, behind human approval", "auto": "send_message_tool", "files": ["app/tools.py::send_message", "app/send_message.py", "app/ui.py::ChatHandlers.prepare_send"]},
+            {"label": "Injection against actions: test chunk, fake send that declines, before/after", "done": true, "note": "Local-mode results in the README; add the api-mode run.", "files": ["app/injection.py", "scripts/action_injection_test.py", "README.md#Injection against actions (agent)"]}
           ]
         },
         {
           "title": "Evaluation",
           "items": [
             {"label": "Agent eval questions in questions.json (one per scenario, expected_tools)", "auto": "questions_agent"},
-            {"label": "Agent eval runner (correctness, tool choice, steps, latency)", "auto": "agent_eval_runner"},
+            {"label": "Agent eval runner (correctness, tool choice, steps, latency)", "auto": "agent_eval_runner", "files": ["scripts/agent_eval_runner.py"]},
             {"label": "scripts/AGENT_FAILURE_LOG.md with failure categories and counts", "auto": "file:scripts/AGENT_FAILURE_LOG.md"},
-            {"label": "Agent vs RAG table in the README", "auto": "readme_agent_vs_rag"},
-            {"label": "Regression check after each agent change", "done": true}
+            {"label": "Agent vs RAG table in the README", "auto": "readme_agent_vs_rag", "files": ["README.md#Agent vs RAG", "scripts/agent_vs_rag.py"]},
+            {"label": "Regression check after each agent change", "done": true, "files": ["scripts/AGENT_FAILURE_LOG.md#Regression checks"]}
           ]
         },
         {
           "title": "README and demo",
           "items": [
-            {"label": "9 agent demo scenarios in the README with expected tools", "done": false,
-             "note": "Table and expected tools are in the README; the team writes the questions and answers (no GenAI)."},
-            {"label": "README: what the agent does, how to run it", "done": true}
+            {"label": "9 agent demo scenarios in the README with expected tools", "done": false, "note": "Table and expected tools are in the README; the team writes the questions and answers (no GenAI).", "files": ["README.md#Agent demo scenarios"]},
+            {"label": "README: what the agent does, how to run it", "done": true, "files": ["README.md#What the agent does", "README.md#Running it"]}
           ]
         }
       ]
@@ -161,11 +156,38 @@
         {
           "title": "Defense",
           "items": [
-            {"label": "All code merged to main on GitHub", "done": false,
-             "note": "PRs #11, #12, #13, #6 and the agent-loop branch are still open."},
+            {"label": "All code merged to main on GitHub", "done": false, "note": "No open PRs; Sai's feature/rag-day2-eval (4 commits) and feature/merge-rag-day2 (1 commit) are still unmerged."},
             {"label": "Demo scenarios rehearsed at temperature 0", "done": false},
             {"label": "Ablation and agent vs RAG tables ready to present", "done": false},
             {"label": "Revised both crash-course notes for the week's MCQ", "done": false}
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Beyond the course",
+      "groups": [
+        {
+          "title": "App",
+          "items": [
+            {"label": "Run modes: api, hybrid (local embeddings) and local (no API key)", "done": true, "files": ["app/local_models.py"]},
+            {"label": "Streaming answers, progress stages and the sources panel", "done": true, "files": ["app/rag.py::RAG.ask_stream", "app/rag.py::stream_answer"]},
+            {"label": "Context assembly: neighbour chunks, sentence trimming, direct article lookup", "done": true, "files": ["app/rag.py::RAG.select_context", "app/rag.py::RAG.add_neighbours", "app/rag.py::RAG.referenced_chunks"]},
+            {"label": "Caches for answers, retrievals, re-rankings and rewrites", "done": true, "files": ["app/utils.py::DiskCache"]},
+            {"label": "Answer confidence score", "done": true, "files": ["app/reflection.py"]},
+            {"label": "Live cost table and follow-up suggestions", "done": true, "files": ["app/ui.py::ChatHandlers.cost_table", "app/ui.py::suggest_followups"]},
+            {"label": "Conversation sidebar and PDF source viewer", "done": true, "files": ["app/ui_sidebar.py", "app/pdf_viewer.py"]},
+            {"label": "Export the chat or an answer (.txt, .pdf)", "done": true, "files": ["app/export.py"]},
+            {"label": "Teams webhook with preview and confirmation", "done": true, "files": ["app/send_message.py"]}
+          ]
+        },
+        {
+          "title": "Pages and tools",
+          "items": [
+            {"label": "Project checklist page", "done": true, "files": ["app/checklist.py"]},
+            {"label": "How it works page (clickable flowchart)", "done": true, "files": ["app/flow.py"]},
+            {"label": "Agent tool calls on the local model", "done": true, "files": ["app/local_models.py::template_messages", "app/local_models.py::tool_calls", "app/local_models.py::LocalMessage"]},
+            {"label": "Mock client for testing the agent without a key", "done": true, "files": ["scripts/mock_client.py", "scripts/test_agent_local.py"]}
           ]
         }
       ]

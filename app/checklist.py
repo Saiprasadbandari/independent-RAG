@@ -11,13 +11,19 @@ Items with an "auto" key tick themselves. Repo checks (files, code, README) run 
 the files on disk and against origin/main, which is what tells "done" from "delivered". Data
 checks (questions.json, corpus.json, eval results) only look at data/, which the course shares on
 Teams rather than in git. Items without "auto" are ticked by hand in app/checklist.json.
+
+An item's "files" say where the work is: a path, "path::function" (or "Class.method", or a
+constant) for part of a Python file, or "README.md#Heading" for one section. Each becomes a link
+to that place on GitHub, and git blame on main over exactly those lines says who wrote them.
 """
 
+import ast
 import fnmatch
 import html
 import json
 import re
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import gradio as gr
@@ -27,6 +33,12 @@ from app.utils import DATA_DIR, ROOT
 CHECKLIST_PATH = Path(__file__).with_name("checklist.json")
 MAIN_REF = "origin/main"
 GIT_TIMEOUT = 10
+REPO_URL = "https://github.com/Saiprasadbandari/independent-RAG"
+# git author e-mails (the part before @, after any "12345+" GitHub prefix) → team member
+PEOPLE = {"xlucifer65": "Rayyan", "saiprasadbandari7": "Sai", "pro.paul108": "Prodipta"}
+MIN_SHARE = 0.05  # contributors below this share of an item's lines aren't listed
+# what the "Who did what" totals count: hand-written code and docs, not lock files or data
+COUNTED_FILES = ("*.py", "*.md", "*.toml", ".gitignore")
 
 
 # ---------------------------------------------------------------------------- repo snapshots
@@ -175,6 +187,127 @@ def status(item: dict, local: Snapshot, main: Snapshot | None) -> str:
     return "local"
 
 
+# ---------------------------------------------------------------------------- links and authors
+
+def person(email: str) -> str:
+    handle = email.strip("<>").split("@")[0].lower().split("+")[-1]
+    return PEOPLE.get(handle, handle)
+
+
+class Blame:
+    """Who wrote each line of each file on one commit, from git blame (cached per file)."""
+
+    def __init__(self, ref: str):
+        self.ref = ref
+        self.lines: dict[str, list[str]] = {}
+
+    def authors(self, path: str) -> list[str]:
+        if path not in self.lines:
+            try:
+                out = subprocess.run(["git", "blame", "--line-porcelain", "-w", self.ref, "--", path], cwd=ROOT,
+                                     capture_output=True, text=True, timeout=GIT_TIMEOUT * 3, check=True).stdout
+                self.lines[path] = [person(line[len("author-mail "):]) for line in out.splitlines()
+                                    if line.startswith("author-mail ")]
+            except Exception:
+                self.lines[path] = []
+        return self.lines[path]
+
+
+_BLAME: dict[str, Blame] = {}
+
+
+def blame_for(ref: str) -> Blame:
+    """One Blame per commit, so reopening the page doesn't blame every file again."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", ref], cwd=ROOT, capture_output=True, text=True,
+                             timeout=GIT_TIMEOUT, check=True).stdout.strip()
+    except Exception:
+        sha = ref
+    return _BLAME.setdefault(sha, Blame(sha))
+
+
+def slug(heading: str) -> str:
+    """GitHub's anchor for a Markdown heading."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def markdown_span(text: str, heading: str) -> tuple[int, int] | None:
+    """Lines (1-based, inclusive) of a heading and everything under it, until the next heading
+    of the same or a higher level. Lines inside code fences are never headings."""
+    lines, start, level, fenced = text.splitlines(), None, 0, False
+    for i, line in enumerate(lines, 1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        m = None if fenced else re.match(r"^(#+)\s+(.*?)\s*$", line)
+        if not m:
+            continue
+        if start is None and m.group(2).lower() == heading.lower():
+            start, level = i, len(m.group(1))
+        elif start is not None and len(m.group(1)) <= level:
+            return start, i - 1
+    return (start, len(lines)) if start else None
+
+
+def python_span(text: str, name: str) -> tuple[int, int] | None:
+    """Lines of a top-level function, class or constant, or of "Class.method"."""
+    body = ast.parse(text).body
+    *owners, last = name.split(".")
+    for owner in owners:
+        body = next((n.body for n in body if isinstance(n, ast.ClassDef) and n.name == owner), [])
+    for node in body:
+        names = ([node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else
+                 [t.id for t in getattr(node, "targets", [getattr(node, "target", None)]) if isinstance(t, ast.Name)])
+        if last in names:
+            first = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+            return first, node.end_lineno
+    return None
+
+
+def locate(spec: str, repo: Snapshot) -> tuple[str, str, tuple[int, int] | None, str] | None:
+    """(path, label, line span or None for the whole file, GitHub URL); None when it isn't there."""
+    sep = "::" if "::" in spec else ("#" if "#" in spec else "")
+    path, part = spec.split(sep, 1) if sep else (spec, "")
+    if not repo.exists(path):
+        return None
+    url = f"{REPO_URL}/blob/main/{path}"
+    if not part:
+        return path, path, None, url
+    try:
+        span = python_span(repo.read(path), part) if sep == "::" else markdown_span(repo.read(path), part)
+    except SyntaxError:
+        span = None
+    if span is None:
+        return None
+    anchor = f"#{slug(part)}" if sep == "#" else f"#L{span[0]}-L{span[1]}"
+    return path, f"{Path(path).name} › {part}", span, url + anchor
+
+
+def contributors(spans: list[tuple[str, tuple[int, int] | None]], blame: Blame) -> Counter:
+    counted, seen = Counter(), set()
+    for path, span in spans:
+        authors = blame.authors(path)
+        first, last = span or (1, len(authors))
+        for line in range(first, min(last, len(authors)) + 1):
+            if (path, line) not in seen:
+                seen.add((path, line))
+                counted[authors[line - 1]] += 1
+    return counted
+
+
+def share_text(counted: Counter) -> str:
+    total = sum(counted.values())
+    shown = [(name, n / total) for name, n in counted.most_common() if total and n / total >= MIN_SHARE]
+    return " · ".join(f"{name} {share:.0%}" for name, share in shown)
+
+
+def item_files(item: dict) -> list[str]:
+    if "files" in item:
+        return item["files"]
+    check = item.get("auto", "")
+    return [check.removeprefix("file:")] if check.startswith("file:") else []
+
+
 # ---------------------------------------------------------------------------- page
 
 ICONS = {"done": "✅", "local": "🟡", "todo": "⬜"}
@@ -199,6 +332,16 @@ CSS = """
 .checklist .note { grid-column: 2; font-size: 13px; color: var(--body-text-color-subdued); }
 .checklist .tag { font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border-color-primary);
                   color: var(--body-text-color-subdued); margin-left: 6px; }
+.checklist .meta { grid-column: 2; font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
+                   color: var(--body-text-color-subdued); }
+.checklist .meta a { color: var(--link-text-color, var(--color-accent)); text-decoration: none; }
+.checklist .meta a:hover { text-decoration: underline; }
+.checklist .meta code { font-size: 12px; }
+.checklist .who { font-weight: 600; color: var(--body-text-color); }
+.checklist .people { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 18px; }
+.checklist .person { border: 1px solid var(--border-color-primary); border-radius: 10px; padding: 8px 14px; min-width: 150px; }
+.checklist .person b { font-size: 16px; }
+.checklist .person div { font-size: 13px; color: var(--body-text-color-subdued); }
 </style>
 """
 
@@ -220,9 +363,48 @@ def group_icon(states: list[str]) -> str:
     return ICONS["local"] if all(s != "todo" for s in states) else ICONS["todo"]
 
 
+def item_meta(item: dict, local: Snapshot, main: Snapshot | None, blame: Blame, led: Counter) -> str:
+    """Links to where the item is on GitHub, and who wrote those lines."""
+    parts, spans = [], []
+    for spec in item_files(item):
+        found = locate(spec, main) if main else None
+        if found:
+            path, label, span, url = found
+            spans.append((path, span))
+            parts.append(f'<a href="{html.escape(url)}" target="_blank" rel="noopener">📄 {html.escape(label)}</a>')
+        elif locate(spec, local):
+            parts.append(f'<span>📄 <code>{html.escape(spec)}</code> (not on GitHub yet)</span>')
+    if item.get("auto") in DATA_CHECKS:
+        parts.append("<span>📦 data/, shared on Teams</span>")
+    counted = contributors(spans, blame) if spans else Counter()
+    if item.get("by"):
+        # work git can't see (Teams posts, data/ files): named by hand in checklist.json
+        parts.append(f'<span class="who">👤 {html.escape(item["by"])}</span>')
+    elif counted:
+        led[counted.most_common(1)[0][0]] += 1
+        parts.append(f'<span class="who">👤 {html.escape(share_text(counted))}</span>')
+    return f'<span class="meta">{"".join(parts)}</span>' if parts else ""
+
+
+def people_summary(main: Snapshot | None, blame: Blame, led: Counter) -> str:
+    if not main:
+        return ""
+    files = [n for n in main.files() if any(fnmatch.fnmatch(n, pattern) for pattern in COUNTED_FILES)]
+    lines = contributors([(n, None) for n in files], blame)
+    total = sum(lines.values()) or 1
+    cards = "".join(f'<div class="person"><b>{html.escape(name)}</b>'
+                    f'<div>{n:,} lines on main ({n / total:.0%})</div>'
+                    f'<div>leads {led[name]} checklist item{"s" * (led[name] != 1)}</div></div>'
+                    for name, n in lines.most_common())
+    return (f'<h3>Who did what</h3><div class="legend">From git blame on GitHub main: who wrote the lines that are '
+            f'there now (code and docs, not lock files or data). Each item below names who wrote the lines it '
+            f'links to.</div><div class="people">{cards}</div>')
+
+
 def render() -> str:
     data = json.loads(CHECKLIST_PATH.read_text(encoding="utf-8"))
     local, main = Snapshot(), main_snapshot()
+    blame, led = blame_for(MAIN_REF if main else "HEAD"), Counter()
     sections, everything = [], []
     for section in data["sections"]:
         groups, section_states = [], []
@@ -234,7 +416,9 @@ def render() -> str:
                 tag = '<span class="tag">auto</span>' if item.get("auto") else ""
                 note = LOCAL_NOTE if state == "local" else (item.get("note") if state == "todo" else None)
                 note_html = f'<span class="note">{html.escape(note)}</span>' if note else ""
-                rows.append(f'<li><span>{ICONS[state]}</span><span>{html.escape(item["label"])}{tag}</span>{note_html}</li>')
+                meta = item_meta(item, local, main, blame, led)
+                rows.append(f'<li><span>{ICONS[state]}</span><span>{html.escape(item["label"])}{tag}</span>'
+                            f'{meta}{note_html}</li>')
             section_states += states
             groups.append(f'<div class="group"><h4>{group_icon(states)} {html.escape(group["title"])}'
                           f'<span class="count">{count_label(states.count("done"), states.count("local"), len(states))}'
@@ -250,7 +434,7 @@ def render() -> str:
                f'{f" · {waiting} done but waiting to be merged" if waiting else ""} · {where}{bar(done, waiting, total)}</div>'
                f'<div class="legend">✅ delivered (on GitHub main, shared on Teams, or ticked by hand) · '
                f'🟡 done, not on main yet · ⬜ not done</div>')
-    return CSS + f'<div class="checklist">{overall}{"".join(sections)}</div>'
+    return CSS + f'<div class="checklist">{overall}{people_summary(main, blame, led)}{"".join(sections)}</div>'
 
 
 def build_checklist_page() -> None:
