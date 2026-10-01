@@ -527,6 +527,9 @@ class Answer:
     # tokens sent to / received from the answer model (0 for cached or local answers)
     input_tokens: int = 0
     output_tokens: int = 0
+    # [Source: X, p. Y] labels the answer wrote that match no chunk actually sent (see
+    # forged_citations) -- a citation check, not just an out-of-range [N] bracket number
+    unverified_citations: list = field(default_factory=list)
 
 
 def cited_refs(text: str, chunks: list[dict]) -> tuple[list[int], list[int]]:
@@ -541,6 +544,16 @@ def cited_refs(text: str, chunks: list[dict]) -> tuple[list[int], list[int]]:
                     if c["source"] == source.strip() and c["page"] == int(page))
     valid = sorted(r for r in refs if 1 <= r <= len(chunks))
     return valid, sorted(refs - set(valid))
+
+
+def forged_citations(text: str, chunks: list[dict]) -> list[tuple[str, int]]:
+    """Citation check (RAG day 2, optional): [Source: X, p. Y] labels the answer writes that
+    don't match any chunk actually sent. Nothing stops the model from citing a page it never
+    saw -- `cited_refs` above only tells you a [N] bracket number is out of range; this catches
+    the model naming a real-sounding source/page combo that simply wasn't in its context."""
+    sent = {(c["source"], c["page"]) for c in chunks}
+    return sorted({(s.strip(), int(p)) for s, p in SOURCE_LABEL_RE.findall(text)
+                  if (s.strip(), int(p)) not in sent})
 
 
 def cited_sources(text: str, chunks: list[dict]) -> list[dict]:
@@ -848,8 +861,9 @@ class RAG:
             if c["id"] not in seen:
                 seen.add(c["id"])
                 retrieved.append(c)
+        forged = forged_citations(text, context) if in_scope else []
         confidence = assess(text, in_scope, truncated, context, retrieved, sources,
-                            cited_refs(text, context)[1], self.reranker)
+                            cited_refs(text, context)[1], self.reranker, forged)
         answer = Answer(
             question=question,
             text=text,
@@ -864,6 +878,7 @@ class RAG:
             confidence_label=confidence.label,
             confidence_signals=confidence.signals,
             confidence_notes=confidence.notes,
+            unverified_citations=forged,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )

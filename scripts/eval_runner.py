@@ -151,6 +151,7 @@ def run_question(rag, question: dict, index: int, full: bool) -> dict:
             "truncated": answer.truncated,
             "confidence": answer.confidence,
             "confidence_label": answer.confidence_label,
+            "unverified_citations": answer.unverified_citations,
             "cost": answer.cost,
             "input_tokens": answer.input_tokens,
             "output_tokens": answer.output_tokens,
@@ -235,6 +236,9 @@ def summarize(rows: list[dict], full: bool) -> dict:
             "cost_per_question": (sum(r.get("cost") or 0 for r in rows) / len(rows)) if rows else None,
             "input_tokens": avg(generated, "input_tokens"),
             "output_tokens": avg(generated, "output_tokens"),
+            # citation check (RAG day 2, optional): share of answers citing a page they were
+            # never given (app/rag.py: forged_citations)
+            "unverified_citation_rate": mean(bool(r.get("unverified_citations")) for r in rows) if rows else 0.0,
         })
         # is the confidence score right as often as it claims? (app/reflection.py)
         bands = defaultdict(list)
@@ -279,7 +283,8 @@ def write_report(rows: list[dict], summary: dict, config: dict, path: Path) -> N
         overall += [["cited an expected page", num(s["citation_hit"], "pct")],
                     ["answer token F1 vs expected_answer", num(s["answer_f1"])],
                     ["answers cut off at max_tokens", s["truncated"]],
-                    ["cost per question", num(s["cost_per_question"], "usd")]]
+                    ["cost per question", num(s["cost_per_question"], "usd")],
+                    ["unverified citations (cited a page never sent)", num(s["unverified_citation_rate"], "pct")]]
     calibration = ""
     if config["full"] and s.get("calibration"):
         order = ["high", "medium", "low"]
