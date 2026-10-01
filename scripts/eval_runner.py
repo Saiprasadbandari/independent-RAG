@@ -79,6 +79,8 @@ def compact(chunk: dict) -> dict:
         out["relevance"] = round(chunk["relevance"], 4)
     if chunk.get("keyword_only"):
         out["keyword_only"] = True
+    if chunk.get("reference"):
+        out["reference"] = chunk["reference"]
     return out
 
 
@@ -102,7 +104,7 @@ def run_question(rag, question: dict, index: int, full: bool) -> dict:
         # retrieval only: earlier questions are enough context to rewrite a follow-up
         history = [(earlier, "") for earlier in question.get("history") or []]
         asked = sanitize_question(question["question"])
-        standalone = rag.condense(asked, history) if rag.needs_rewrite(asked, history) else asked
+        standalone = rag.rewrite(asked, history)
         answer = None
     candidates, ranked, context = rag.search(standalone)
     latency = time.perf_counter() - started

@@ -72,7 +72,8 @@ similarity threshold) skip re-ranking and the LLM call.
   so a question is only treated as on-topic when a vector match clears the similarity threshold.
 - **Re-ranking** (`app/rerank.py`): the merged FAISS + BM25 candidates (up to 30) are scored by the
   `BAAI/bge-reranker-base` cross-encoder from 0 to 1 for how well they answer the question.
-  Passages scoring at least 0.1 are kept, and the context is built from the best of them (see
+  Passages scoring at least 0.05 are kept (the confidence threshold, below which a question is
+  refused without calling the model; chosen from the eval runner's threshold table), and the context is built from the best of them (see
   "Keeping the answer prompt small" below). It runs on your GPU (Apple
   Silicon via MPS, NVIDIA via CUDA, CPU otherwise) with no API calls. The model (~1.1 GB)
   downloads from Hugging Face on first start; after that it loads in ~10 s and scores a question
@@ -223,6 +224,17 @@ answer; the only defence against that is controlling what gets indexed.
   in another conversation get their own answer. The 🗑 icon or "Clear conversation" starts over.
   In `questions.json`, follow-up questions list the earlier questions in a `history` field and the
   evaluation replays them first.
+- **Moving through the regulation**: "what is the next one?", "the previous annex", "the one after
+  that" are rewritten by counting, not by the model: the last article, annex, recital, chapter or
+  section named in the conversation, plus or minus one, within the regulation's ranges (Articles
+  1–113, Annexes I–XIII, Recitals 1–180). "What does Article 41 say?" followed by "What is the next
+  one?" searches for "What does Article 42 say?".
+- **Article and annex lookup**: a question that names an article or annex also gets that unit's own
+  text, found by its heading (all 113 articles and 13 annexes are indexed). A bare number means
+  little to embeddings and also matches definition (42) or cross-references, so "What does Article
+  42 say?" used to retrieve the wrong page. When the question is mainly a lookup, the unit's text is
+  pinned first in the context; when it only mentions an article in passing, the article is an extra
+  candidate for the re-ranker. Shown as "direct lookup (Article 42)" in the sources panel.
 - **Sources**: the panel next to the chat shows the full text of every passage the model was
   given, with the cited ones marked ✅, plus their relevance and similarity scores. Click any
   earlier answer to see its sources. Candidates that didn't make it into the context are under

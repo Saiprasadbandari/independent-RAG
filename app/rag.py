@@ -86,7 +86,34 @@ QUESTION_LABEL_RE = re.compile(r"^\s*question\s*:\s*", re.IGNORECASE | re.MULTIL
 # bent towards the previous topic (and most questions skip the rewrite call entirely)
 FOLLOW_UP_RE = re.compile(
     r"\b(?:it|its|that|this|these|those|they|them|their|such|same|above|previous|former|latter|"
-    r"first|second|third|last|other|another|else|also|what about|how about|and if)\b", re.IGNORECASE)
+    r"first|second|third|last|next|following|preceding|other|another|else|also|what about|how about|"
+    r"and if)\b", re.IGNORECASE)
+
+# Moving through the regulation's numbered parts ("the next one", "the previous annex", "the one
+# after that") is resolved without the model: the last unit mentioned in the conversation, plus
+# or minus one. Valid ranges keep it inside the regulation.
+UNIT_RANGES = {"article": (1, 113), "annex": (1, 13), "recital": (1, 180), "chapter": (1, 13), "section": (1, 9)}
+ROMAN_UNITS = {"annex", "chapter"}
+UNIT_RE = re.compile(r"\b(article|annex|recital|chapter|section)\s+(\d+|[ivxlc]+)\b(?![\w-])", re.IGNORECASE)
+NAV_WORD_RE = re.compile(r"\b(?:(next|following|subsequent|after)|(previous|preceding|prior|before))\b", re.IGNORECASE)
+# the phrase to replace with the resolved unit: "the next one", "the following article", "the one after that"
+NAV_PHRASE_RE = re.compile(
+    r"\bthe\s+(?:next|following|subsequent|previous|preceding|prior)"
+    r"(?:\s+(?:one|article|annex|recital|chapter|section))?\b"
+    r"|\bthe\s+one\s+(?:after|before)(?:\s+(?:that|it|this))?\b", re.IGNORECASE)
+
+# Direct lookup of a named article or annex. "What does Article 41 say?" carries almost no meaning
+# for embeddings, and the number alone also matches definition (41) or "Article 41(2) of another
+# regulation", so the chunk where the unit's own text starts is fetched by its heading.
+HEADING_RES = {"article": re.compile(r"\bArticle (\d{1,3}) (?=[A-Z])"),
+               "annex": re.compile(r"\bANNEX ([IVXLC]+)\b")}
+# "referred to in Article 41 …" is a cross-reference, not the article's heading
+CROSS_REF_BEFORE_RE = re.compile(r"\b(?:in|to|of|under|and|with|by|from|see|pursuant)\s*$", re.IGNORECASE)
+REFERENCE_CHUNKS = 2        # the heading chunk and the one after it
+# a question with at most this many other topic words is mainly a lookup ("what does Article 41
+# say?"): its article is pinned into the context. Longer questions that mention an article in
+# passing only get it as an extra candidate for the re-ranker.
+LOOKUP_MAX_WORDS = 3
 
 # How the context is assembled when the local re-ranker is available. Everything here runs
 # on the local GPU and exists to send the API fewer, better tokens.
@@ -96,6 +123,7 @@ NEIGHBOUR_TOP = 2             # the best passages also pull in the chunks that f
 NEIGHBOUR_STEPS = 6           # up to this far ahead: lists and articles cross chunk boundaries
 TRIM_MIN_CHARS = 400          # ranked passages longer than this are trimmed...
 SENTENCE_MIN_RELEVANCE = 0.1  # ...to the sentences scoring at least this
+NEIGHBOUR_MIN_RELEVANCE = 0.1  # a following chunk joins the context when it scores at least this
 
 # progress stages RAG.ask reports through on_stage, in order
 STAGES = ("rewriting", "searching", "reranking", "generating", "checking")
@@ -305,6 +333,101 @@ def keeps_question(original: str, rewritten: str) -> bool:
     return kept >= len(words) / 2
 
 
+def roman_to_int(numeral: str) -> int:
+    values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
+    total = 0
+    for current, following in zip(numeral, numeral[1:] + " "):
+        value = values[current]
+        total += -value if values.get(following, 0) > value else value
+    return total
+
+
+def int_to_roman(number: int) -> str:
+    out = ""
+    for value, symbol in ((100, "C"), (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")):
+        while number >= value:
+            out += symbol
+            number -= value
+    return out
+
+
+def unit_number(unit: str, raw: str) -> int | None:
+    if raw.isdigit():
+        return int(raw)
+    return roman_to_int(raw.lower()) if unit in ROMAN_UNITS and re.fullmatch(r"[ivxlc]+", raw.lower()) else None
+
+
+def unit_label(unit: str, number: int) -> str:
+    return f"{unit.capitalize()} {int_to_roman(number) if unit in ROMAN_UNITS else number}"
+
+
+def navigation_step(question: str) -> int | None:
+    """+1 for "the next one", -1 for "the previous article", None if the question doesn't move
+    through the regulation. Needs a unit word or "one" (or a very short question), so phrases like
+    "prior to placing on the market" don't count."""
+    match = NAV_WORD_RE.search(question)
+    if not match:
+        return None
+    if not (re.search(r"\b(one|article|annex|recital|chapter|section)\b", question, re.IGNORECASE)
+            or len(question.split()) <= 3):
+        return None
+    return 1 if match.group(1) else -1
+
+
+def resolve_navigation(question: str, history: list[tuple[str, str]]) -> str | None:
+    """Rewrite "what is the next one?" after "what does Article 41 say?" into "What does Article 42
+    say?". Uses the last numbered unit in the earlier questions (of the type the question names,
+    if it names one). None when there's nothing to navigate from, so the model rewrite takes over."""
+    step = navigation_step(question)
+    if step is None:
+        return None
+    named = re.search(r"\b(article|annex|recital|chapter|section)\b", question, re.IGNORECASE)
+    wanted = named.group(1).lower() if named else None
+    for earlier, _ in reversed(history):
+        refs = [m for m in UNIT_RE.finditer(earlier) if not wanted or m.group(1).lower() == wanted]
+        if not refs:
+            continue
+        ref = refs[-1]
+        unit = ref.group(1).lower()
+        number = unit_number(unit, ref.group(2))
+        if number is None:
+            continue
+        low, high = UNIT_RANGES[unit]
+        if not low <= number + step <= high:
+            return None
+        label = unit_label(unit, number + step)
+        # "What does the next one say about fines?" -> "What does Article 42 say about fines?"
+        replaced = NAV_PHRASE_RE.sub(label, question, count=1)
+        if replaced != question and content_words(NAV_PHRASE_RE.sub(" ", question, count=1)):
+            return replaced
+        # a bare "what is the next one?" keeps the earlier question's intent with the new unit;
+        # a paragraph reference like the "(1)" in "Article 6(1)" doesn't carry over to the next article
+        rest = re.sub(r"^(?:\(\w+\))+", "", earlier[ref.end():])
+        return earlier[:ref.start()] + label + rest
+    return None
+
+
+def build_unit_index(chunks: list[dict]) -> dict[tuple[str, int], int]:
+    """(unit, number) -> id of the first chunk where that article's or annex's own text starts."""
+    index = {}
+    for c in chunks:
+        for unit, pattern in HEADING_RES.items():
+            for m in pattern.finditer(c["text"]):
+                if unit == "article" and CROSS_REF_BEFORE_RE.search(c["text"][max(0, m.start() - 25):m.start()]):
+                    continue
+                number = unit_number(unit, m.group(1))
+                low, high = UNIT_RANGES[unit]
+                if number and low <= number <= high:
+                    index.setdefault((unit, number), c["id"])
+    return index
+
+
+def is_lookup(question: str) -> bool:
+    """Mainly asks for a named unit ("what does Article 41 say?", "show me Annex III")."""
+    words = content_words(UNIT_RE.sub(" ", question)) - {"say", "says", "article", "annex", "show", "give", "text"}
+    return len(words) <= LOOKUP_MAX_WORDS
+
+
 def looks_like_follow_up(question: str) -> bool:
     return len(question.split()) <= 3 or bool(FOLLOW_UP_RE.search(question))
 
@@ -453,12 +576,13 @@ class RAG:
         self.bm25 = BM25Index(retriever.chunks) if USE_BM25 else None
         self.use_rerank = USE_RERANK and self.reranker is not None
         self.use_rewrite = USE_QUERY_REWRITE
+        self.units = build_unit_index(retriever.chunks)
         # local/hybrid clients (app/local_models.py) say which models they really run
         embedding_id = getattr(client, "embedding_model", EMBEDDING_MODEL)
         self.min_score = MIN_SCORES.get(embedding_id, MIN_SCORE)
         chat_id = getattr(client, "chat_model", CHAT_MODEL)
         context_id = (CONTEXT_PASSAGES, RELATIVE_RELEVANCE, NEIGHBOUR_TOP, NEIGHBOUR_STEPS,
-                      TRIM_MIN_CHARS, SENTENCE_MIN_RELEVANCE)
+                      TRIM_MIN_CHARS, SENTENCE_MIN_RELEVANCE, NEIGHBOUR_MIN_RELEVANCE)
 
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
@@ -532,7 +656,7 @@ class RAG:
                 if i in have:
                     break
                 pending.append(i)
-                if scores[i] < self.reranker.min_relevance:
+                if scores[i] < NEIGHBOUR_MIN_RELEVANCE:
                     misses += 1
                     if misses == 2:
                         break
@@ -605,14 +729,44 @@ class RAG:
     def needs_rewrite(self, asked: str, history: list[tuple[str, str]] | None) -> bool:
         return bool(self.use_rewrite and history and asked and looks_like_follow_up(asked))
 
+    def rewrite(self, asked: str, history: list[tuple[str, str]] | None) -> str:
+        """The question to search with: navigation ("the next one") resolved by counting, other
+        follow-ups rewritten by the model, standalone questions unchanged."""
+        if not self.needs_rewrite(asked, history):
+            return asked
+        return resolve_navigation(asked, history) or self.condense(asked, history)
+
+    def referenced_chunks(self, question: str) -> list[dict]:
+        """The chunks of each article or annex the question names, found by heading."""
+        found, seen = [], set()
+        for m in UNIT_RE.finditer(question):
+            unit = m.group(1).lower()
+            start = self.units.get((unit, unit_number(unit, m.group(2)) or 0))
+            if start is None:
+                continue
+            label = unit_label(unit, unit_number(unit, m.group(2)))
+            for i in range(start, min(start + REFERENCE_CHUNKS, len(self.retriever.chunks))):
+                if i not in seen and self.retriever.chunks[i]["source"] == self.retriever.chunks[start]["source"]:
+                    seen.add(i)
+                    found.append({**self.retriever.chunks[i], "score": self.min_score, "reference": label})
+        return found
+
     def search_steps(self, standalone: str):
         """Retrieval for one question: yields ("stage", name) events and returns
         (candidates, ranked, context). ask_stream streams it; search() runs it to the end."""
         # nothing left after removing instructions: there's no question to search for
         candidates = self.retrieve(standalone) if standalone else []
+        references = self.referenced_chunks(standalone) if standalone else []
+        if references:
+            by_id = {c["id"]: c for c in candidates}
+            for r in references:
+                by_id[r["id"]] = {**by_id.get(r["id"], {}), **r, "score": by_id.get(r["id"], r)["score"]}
+            candidates = list(by_id.values())
         # off-topic stops here. Decided on meaning: BM25 matches common words in almost any
-        # question, so keyword hits alone don't make a question on-topic
-        on_topic = any(not c.get("keyword_only") and c["score"] >= self.min_score for c in candidates)
+        # question, so keyword hits alone don't make a question on-topic; naming an article that
+        # exists does
+        on_topic = bool(references) or any(not c.get("keyword_only") and c["score"] >= self.min_score
+                                           for c in candidates)
         plausible = relevant_chunks(candidates, self.min_score) if on_topic else []
         if self.use_rerank and plausible:
             yield "stage", "reranking"
@@ -621,6 +775,11 @@ class RAG:
         else:
             ranked = plausible
             context = plausible[:self.top_k]
+        if references and is_lookup(standalone):
+            # the question asks for this article: its own text goes first, whatever the scores
+            pinned = [next((c for c in ranked if c["id"] == r["id"]), r) for r in references]
+            pinned_ids = {c["id"] for c in pinned}
+            context = pinned + [c for c in context if c["id"] not in pinned_ids]
         return candidates, ranked, context
 
     def search(self, standalone: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -645,7 +804,7 @@ class RAG:
         standalone = asked
         if self.needs_rewrite(asked, history):
             yield "stage", "rewriting"
-            standalone = self.condense(asked, history)
+            standalone = self.rewrite(asked, history)
 
         # conversation memory: the answer model sees the last exchanges, so the same words can
         # need a different answer in a different conversation, and the cache key says which
