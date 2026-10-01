@@ -142,7 +142,7 @@
             {"label": "Agent eval runner (correctness, tool choice, steps, latency)", "auto": "agent_eval_runner"},
             {"label": "scripts/AGENT_FAILURE_LOG.md with failure categories and counts", "auto": "file:scripts/AGENT_FAILURE_LOG.md"},
             {"label": "Agent vs RAG table in the README", "auto": "readme_agent_vs_rag"},
-            {"label": "Regression check after each agent change", "done": false}
+            {"label": "Regression check after each agent change", "done": true}
           ]
         },
         {
