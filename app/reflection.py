@@ -8,11 +8,11 @@ No extra API calls. Each signal is 0 to 1:
 - grounding: how well the cited passages match the answer text itself, scored by the local
   re-ranker (skipped when it isn't installed)
 
-Confidence is their weighted average. A truncated answer is capped below "high".
+Confidence is their weighted average. An uncited or truncated answer is capped below "high".
 For a refusal, confidence is about the refusal itself: high when nothing relevant was
 found, low when a strong passage existed and the model still declined.
 
-The weights and bands are starting points; scripts/evaluate.py reports how often each
+The weights and bands are starting points; scripts/eval_runner.py (full mode) reports how often each
 band is actually right so they can be tuned on the real question set.
 """
 
@@ -27,7 +27,7 @@ FULL_SUPPORT = 3
 COSINE_FLOOR = 0.30
 COSINE_CEILING = 0.70
 # bump when the scoring changes so cached answers get re-scored
-REFLECTION_VERSION = 1
+REFLECTION_VERSION = 2
 
 BRACKETS_RE = re.compile(r"\s*\[[^\]]*\]")
 
@@ -95,6 +95,9 @@ def assess(text: str, in_scope: bool, truncated: bool, context: list[dict], retr
 
     weights = {name: WEIGHTS[name] for name in signals}
     score = sum(signals[name] * w for name, w in weights.items()) / sum(weights.values())
+    # an answer that can't be traced back to a passage, or was cut off, is never "high"
+    if not cited:
+        score = min(score, HIGH - 0.01)
     if truncated:
         score = min(score, HIGH - 0.01)
         notes.append("answer was cut off at the length limit")

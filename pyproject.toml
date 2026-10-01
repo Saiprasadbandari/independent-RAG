@@ -1,0 +1,28 @@
+[project]
+name = "independent-rag"
+version = "0.1.0"
+description = "RAG assistant for the EU AI Act (EPITA GenAI week, team ParisAI)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# only libraries from the course's allowed list
+dependencies = [
+    "openai>=1.40",
+    "faiss-cpu>=1.8",
+    "numpy>=1.26",
+    "pymupdf>=1.24",
+    "beautifulsoup4>=4.12",
+    "gradio>=4.40",
+    "python-dotenv>=1.0",
+    "sentence-transformers>=3.0",  # cross-encoder re-ranking
+    "rank-bm25>=0.2.2",            # hybrid search
+    "simpleeval>=1.0",             # agent calculator tool
+]
+
+[dependency-groups]
+dev = [
+    "tiktoken>=0.7",  # token counts when measuring prompt sizes
+]
+
+[tool.uv]
+# an app run with `uv run python -m app.main`, not a package to install
+package = false

@@ -1,0 +1,178 @@
+{
+  "_how_to_update": "Items with \"auto\" tick themselves from the repo and data/. For the others, set \"done\" to true when finished and commit. \"note\" is shown under the item.",
+  "sections": [
+    {
+      "title": "Before the week",
+      "groups": [
+        {
+          "title": "Team and repository",
+          "items": [
+            {"label": "Team of 3 formed and registered (Microsoft Form)", "done": true},
+            {"label": "Private GitHub repo, bachtn added as collaborator", "done": true},
+            {"label": ".gitignore excludes .venv/, .env and data/", "auto": "gitignore"},
+            {"label": "README with team name and members", "done": true},
+            {"label": "Python 3.12 managed with uv", "auto": "uv_python312"}
+          ]
+        },
+        {
+          "title": "Assignment 0: corpus preparation",
+          "items": [
+            {"label": "scripts/extract.py", "auto": "file:scripts/extract.py"},
+            {"label": "data/corpus.json and data/sample.json", "auto": "corpus_files"},
+            {"label": "scripts/EXTRACTION_REPORT.md", "auto": "file:scripts/EXTRACTION_REPORT.md"},
+            {"label": "corpus.json + sample.json uploaded to Teams, repo link and stats posted", "done": false,
+             "note": "Set to true once posted on Teams."}
+          ]
+        },
+        {
+          "title": "Assignment 1: evaluation questions",
+          "items": [
+            {"label": "40 to 50 questions meeting the category minimums", "auto": "questions_minimums"},
+            {"label": "Exactly 5 priority questions", "auto": "questions_priority"},
+            {"label": "Cross-reference questions cover at least 5 of 6 sub-types", "auto": "questions_cross_subtypes",
+             "note": "One PDF makes different_documents impossible; contradictory can be skipped if the corpus has none, but say so in the README."},
+            {"label": "Stress-test questions cover at least 8 of 11 sub-types", "auto": "questions_stress_subtypes"},
+            {"label": "questions.json uploaded to Teams with the counts per category", "done": false,
+             "note": "Set to true once posted on Teams."}
+          ]
+        },
+        {
+          "title": "Pre-read",
+          "items": [
+            {"label": "Concept guide and videos read, pre-read quiz taken", "done": false,
+             "note": "Each team member."}
+          ]
+        }
+      ]
+    },
+    {
+      "title": "RAG day 1",
+      "groups": [
+        {
+          "title": "Indexing and retrieval",
+          "items": [
+            {"label": "Chunk corpus.json, FAISS index built once and saved to disk", "auto": "file:app/embedding.py"},
+            {"label": "Re-ranking with a cross-encoder", "auto": "file:app/rerank.py"},
+            {"label": "Hybrid search (BM25 + vectors, Reciprocal Rank Fusion)", "auto": "file:app/hybrid.py"}
+          ]
+        },
+        {
+          "title": "Generation, memory and UI",
+          "items": [
+            {"label": "Answers with citations (document + page)", "done": true},
+            {"label": "Out-of-scope questions refused", "done": true},
+            {"label": "Conversation memory: last exchanges sent with each question", "auto": "conversation_memory"},
+            {"label": "Web UI with the sources next to the answer", "done": true}
+          ]
+        },
+        {
+          "title": "Evaluation tools",
+          "items": [
+            {"label": "scripts/retrieval_checker.py", "auto": "file:scripts/retrieval_checker.py"},
+            {"label": "scripts/FAILURE_LOG.md", "auto": "file:scripts/FAILURE_LOG.md"}
+          ]
+        }
+      ]
+    },
+    {
+      "title": "RAG day 2",
+      "groups": [
+        {
+          "title": "Generation",
+          "items": [
+            {"label": "Confidence threshold chosen and reported (correct vs wrong refusals) in the README", "auto": "readme_threshold",
+             "note": "0.05 chosen from the local-mode table; add the api-mode table to the README."},
+            {"label": "Prompt injection test: INJECTION_TEST flag, <context> delimiters, before/after in the README", "auto": "injection_flag",
+             "note": "scripts/injection_test.py covers 10 attacks, but not the course's flag + delimiter version."}
+          ]
+        },
+        {
+          "title": "Evaluation",
+          "items": [
+            {"label": "scripts/eval_runner.py (retrieval-only + full, recall@k, MRR, latency)", "auto": "file:scripts/eval_runner.py"},
+            {"label": "data/eval_results.json from an api-mode run", "auto": "eval_results_api"},
+            {"label": "3 to 4 follow-up questions with a history field in questions.json", "auto": "questions_follow_ups"},
+            {"label": "Ablation table in the README, with what you kept", "auto": "readme_ablation"},
+            {"label": "Regression check logged after each change", "auto": "failure_log_regressions"}
+          ]
+        },
+        {
+          "title": "README and demo",
+          "items": [
+            {"label": "README: description, install, run", "auto": "readme_install"},
+            {"label": "6 RAG demo questions in the README with expected answers and pages", "auto": "readme_rag_demo"}
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Agent day 1",
+      "groups": [
+        {
+          "title": "Tools",
+          "items": [
+            {"label": "search_corpus tool with a \"No matching passages found\" threshold", "auto": "tool:search_corpus"},
+            {"label": "calculator tool (simpleeval)", "auto": "tool:calculator"},
+            {"label": "One tool of your own, justified in the README", "auto": "readme_own_tool",
+             "note": "quote_exact exists on Sai's branch; the README justification is missing."}
+          ]
+        },
+        {
+          "title": "Agent loop and UI",
+          "items": [
+            {"label": "Agent loop with a 5 to 6 step cap", "auto": "file:app/agent.py"},
+            {"label": "Agent mode in the UI with the step trace and the full trace", "auto": "ui_agent_mode"}
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Agent day 2",
+      "groups": [
+        {
+          "title": "Tools and actions",
+          "items": [
+            {"label": "Two more tools of your own (5 in total), justified in the README", "auto": "five_tools"},
+            {"label": "Recovery: rephrase and retry with a retry limit", "done": false,
+             "note": "A repeated-call guard exists; a real retry limit doesn't."},
+            {"label": "send_message as an agent tool, behind human approval", "auto": "send_message_tool",
+             "note": "Sai's Teams webhook + approval button exists (PR #13); the agent can't call it yet."},
+            {"label": "Injection against actions: test chunk, fake send that declines, before/after", "done": false}
+          ]
+        },
+        {
+          "title": "Evaluation",
+          "items": [
+            {"label": "Agent eval questions in questions.json (one per scenario, expected_tools)", "auto": "questions_agent"},
+            {"label": "Agent eval runner (correctness, tool choice, steps, latency)", "auto": "agent_eval_runner"},
+            {"label": "scripts/AGENT_FAILURE_LOG.md with failure categories and counts", "auto": "file:scripts/AGENT_FAILURE_LOG.md"},
+            {"label": "Agent vs RAG table in the README", "auto": "readme_agent_vs_rag"},
+            {"label": "Regression check after each agent change", "done": false}
+          ]
+        },
+        {
+          "title": "README and demo",
+          "items": [
+            {"label": "9 agent demo scenarios in the README with expected tools", "done": false},
+            {"label": "README: what the agent does, how to run it", "done": false}
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Friday",
+      "groups": [
+        {
+          "title": "Defense",
+          "items": [
+            {"label": "All code merged to main on GitHub", "done": false,
+             "note": "PRs #11, #12, #13, #6 and the agent-loop branch are still open."},
+            {"label": "Demo scenarios rehearsed at temperature 0", "done": false},
+            {"label": "Ablation and agent vs RAG tables ready to present", "done": false},
+            {"label": "Revised both crash-course notes for the week's MCQ", "done": false}
+          ]
+        }
+      ]
+    }
+  ]
+}

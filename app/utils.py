@@ -138,5 +138,6 @@ def format_retrieved(chunks: list[dict], preview: int = 400) -> str:
     for i, c in enumerate(chunks, 1):
         text = c["text"] if len(c["text"]) <= preview else c["text"][:preview].rstrip() + "…"
         relevance = f" · relevance {c['relevance']:.2f}" if "relevance" in c else ""
-        blocks.append(f"**[{i}] {format_citation(c)}** — score {c['score']:.2f}{relevance}\n\n> {text}")
+        score = "keyword match (BM25)" if c.get("keyword_only") else f"score {c['score']:.2f}"
+        blocks.append(f"**[{i}] {format_citation(c)}** — {score}{relevance}\n\n> {text}")
     return "\n\n---\n\n".join(blocks)
