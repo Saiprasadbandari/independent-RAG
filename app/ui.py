@@ -21,13 +21,13 @@ EXAMPLES = [
 ]
 
 CONFIDENCE_ICONS = {"high": "🟢", "medium": "🟡", "low": "🔴"}
-# (progress fraction, message) shown while RAG.ask works through its stages
-STAGE_PROGRESS = {
-    "rewriting": (0.10, "Understanding your follow-up…"),
-    "searching": (0.25, "Embedding the question and searching the index…"),
-    "reranking": (0.50, "Re-ranking passages on the GPU…"),
-    "generating": (0.70, "Generating the answer…"),
-    "checking": (0.90, "Checking confidence…"),
+# shown in the answer bubble while RAG.ask_stream works through its stages
+STAGE_TEXT = {
+    "rewriting": "Understanding your follow-up…",
+    "searching": "Embedding the question and searching the index…",
+    "reranking": "Re-ranking and trimming passages on the GPU…",
+    "generating": "Writing the answer…",
+    "checking": "Checking confidence…",
 }
 EMPTY_SOURCES = "### Sources\n_Ask a question to see the passages each answer is based on._"
 
@@ -78,10 +78,18 @@ def format_sources_panel(turns: list[dict], index: int | None) -> tuple[str, str
         blocks.append(f"**Searched for:** {answer['standalone_question']}")
     if not context:
         blocks.append("_No passage was relevant enough to send to the model._")
+    ids = {c["id"]: i for i, c in enumerate(context, 1)}
     for i, c in enumerate(context, 1):
         mark = "✅ cited" if i in cited else "not cited"
         relevance = f" · relevance {c['relevance']:.2f}" if "relevance" in c else ""
-        blocks.append(f"**[{i}] {format_citation(c)}** — {mark}{relevance} · similarity {c['score']:.2f}\n\n{quote(c['text'])}")
+        if "neighbour_of" in c:
+            origin = f" · continues [{ids.get(c['neighbour_of'], '?')}]"
+        elif c.get("keyword_only"):
+            origin = " · keyword match (BM25)"
+        else:
+            origin = f" · similarity {c['score']:.2f}"
+        trimmed = " · ✂️ trimmed to relevant sentences" if c.get("trimmed") else ""
+        blocks.append(f"**[{i}] {format_citation(c)}** — {mark}{relevance}{origin}{trimmed}\n\n{quote(c['text'])}")
     return "\n\n".join(blocks), format_retrieved(others) if others else "_None._"
 
 
@@ -106,31 +114,42 @@ class ChatHandlers:
         if not turn or "error" in turn:
             return self.rag.tracker.summary()
         answer = turn["answer"]
-        this = f"${answer['cost']:.5f}" + (" (answer from cache)" if answer["cached"] else "")
+        if answer["cached"]:
+            this = "$0 (answer from cache)"
+        else:
+            tokens = f", {answer['input_tokens']} in / {answer['output_tokens']} out tokens" if answer["input_tokens"] else ""
+            this = f"${answer['cost']:.5f}{tokens}"
         return f"This answer: {this} · {self.rag.tracker.summary()}"
 
-    def ask(self, message: str, chat: list, turns: list, progress=gr.Progress()):
+    def ask(self, message: str, chat: list, turns: list):
+        """Generator: the reply bubble shows each stage, then the answer as it streams in."""
         if not message or not message.strip():
             raise gr.Error("Please enter a question.")
+        question = message.strip()
         history = [(t["answer"]["standalone_question"] or t["question"], t["answer"]["text"])
                    for t in turns if "answer" in t]
+        chat = chat + [{"role": "user", "content": question}, {"role": "assistant", "content": "⏳ Starting…"}]
+        waiting = (gr.skip(),) * 5
+        yield ("", list(chat), *waiting)
 
-        def on_stage(name: str):
-            fraction, description = STAGE_PROGRESS[name]
-            progress(fraction, desc=description)
-
-        progress(0.05, desc="Starting…")
         try:
-            answer = self.rag.ask(message, history, on_stage)
-            turn = {"question": message.strip(), "answer": asdict(answer)}
+            for kind, value in self.rag.ask_stream(question, history):
+                if kind == "stage":
+                    chat[-1] = {"role": "assistant", "content": f"⏳ {STAGE_TEXT[value]}"}
+                elif kind == "delta":
+                    chat[-1] = {"role": "assistant", "content": value + " ▌"}
+                else:
+                    turn = {"question": question, "answer": asdict(value)}
+                    break
+                # a fresh list per update, so every streamed frame is its own snapshot
+                yield (gr.skip(), list(chat), *waiting)
         except (RuntimeError, openai.OpenAIError) as e:
-            turn = {"question": message.strip(), "error": str(e)}
+            turn = {"question": question, "error": str(e)}
 
         turns = turns + [turn]
-        chat = chat + [{"role": "user", "content": turn["question"]},
-                       {"role": "assistant", "content": format_chat_answer(turn)}]
+        chat[-1] = {"role": "assistant", "content": format_chat_answer(turn)}
         index = len(turns) - 1
-        return ("", chat, turns, index, *format_sources_panel(turns, index), self.cost_line(turn))
+        yield (gr.skip(), chat, turns, index, *format_sources_panel(turns, index), self.cost_line(turn))
 
     def select(self, turns: list, evt: gr.SelectData):
         index = evt.index if isinstance(evt.index, int) else evt.index[0]
