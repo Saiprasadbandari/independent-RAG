@@ -431,7 +431,11 @@ def main():
 
     if not args.questions.exists():
         raise SystemExit(f"{args.questions} not found — get data/ from Teams.")
-    questions = json.loads(args.questions.read_text(encoding="utf-8"))[:args.limit]
+    all_questions = json.loads(args.questions.read_text(encoding="utf-8"))
+    # agent-category questions test tool use, not retrieval -- scripts/agent_eval_runner.py
+    # scores those; mixing them in here would pollute recall@k/refusal metrics with scenarios
+    # like "calculator only, no search needed" that aren't retrieval questions at all
+    questions = [q for q in all_questions if q.get("category") != "agent"][:args.limit]
     switched = args.no_rerank or args.no_bm25 or args.no_rewrite
 
     with tempfile.TemporaryDirectory() as tmp:
