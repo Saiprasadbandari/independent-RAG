@@ -10,6 +10,7 @@ import openai
 
 from app.agent import run_agent
 from app.checklist import build_checklist_page
+from app.flow import FLOW_CSS, build_flow_page
 from app.export import export
 from app.rag import RAG, cited_refs
 from app.send_message import send_to_teams
@@ -354,7 +355,7 @@ MINIMAL_CSS = """
 .gradio-container { max-width: 1100px !important; margin: auto; }
 footer { display: none !important; }
 #suggest-row button { font-size: 0.85em; text-align: left; white-space: normal; height: auto; }
-"""
+""" + FLOW_CSS
 
 
 def build_ui(rag: RAG) -> gr.Blocks:
@@ -443,8 +444,8 @@ def build_ui(rag: RAG) -> gr.Blocks:
     with demo.route("Project checklist", "/checklist"):
         build_checklist_page()
 
-    # a second page listing every course task, ticked automatically where the repo shows it
-    with demo.route("Project checklist", "/checklist"):
-        build_checklist_page()
+    # the whole system as a clickable flowchart
+    with demo.route("How it works", "/flow"):
+        build_flow_page()
 
     return demo
