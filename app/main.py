@@ -18,6 +18,7 @@ import argparse
 from dotenv import load_dotenv
 
 from app.embedding import Retriever, build_index, index_exists, load_index
+from app.injection import INJECTION_TEST, add_test_chunk
 from app.local_models import MODES, make_client
 from app.rag import RAG
 import gradio as gr
@@ -54,6 +55,10 @@ def main():
 
     if args.build_only:
         return
+
+    if INJECTION_TEST:
+        index, chunks = add_test_chunk(client, index, chunks, tracker)
+        print("INJECTION_TEST is on: one poisoned passage added to the in-memory index")
 
     retriever = Retriever(client, index, chunks, tracker)
     rag = RAG(client, retriever, tracker)

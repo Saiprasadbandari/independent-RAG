@@ -316,15 +316,16 @@ SEND_MESSAGE_SCHEMA = {
 }
 
 
-def build_tools(rag) -> tuple[list[dict], dict]:
-    """Returns (schemas, functions) for the agent's tools, ready for the agent loop."""
+def build_tools(rag, send=None) -> tuple[list[dict], dict]:
+    """Returns (schemas, functions) for the agent's tools, ready for the agent loop.
+    `send` replaces send_message, e.g. app.injection.FakeSend in the injection test."""
     functions = {
         "search_corpus": make_search_corpus(rag),
         "calculator": calculator,
         "quote_exact": quote_exact,
         "get_definition": get_definition,
         "date_diff": date_diff,
-        "send_message": send_message,
+        "send_message": send or send_message,
     }
     schemas = [SEARCH_CORPUS_SCHEMA, CALCULATOR_SCHEMA, QUOTE_EXACT_SCHEMA, GET_DEFINITION_SCHEMA,
                DATE_DIFF_SCHEMA, SEND_MESSAGE_SCHEMA]
