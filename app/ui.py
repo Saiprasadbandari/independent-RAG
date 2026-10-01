@@ -8,6 +8,7 @@ from pathlib import Path
 import gradio as gr
 import openai
 
+from app.agent import run_agent
 from app.checklist import build_checklist_page
 from app.export import export
 from app.rag import RAG, cited_refs
@@ -100,9 +101,27 @@ def format_confidence(answer: dict) -> str:
     return f"{icon} **{subject} confidence: {answer['confidence']:.0%} ({answer['confidence_label']})** — {notes}"
 
 
+def format_trajectory(steps: list[dict]) -> str:
+    if not steps:
+        return "_No tools were needed._"
+    lines = []
+    for i, step in enumerate(steps, 1):
+        args = ", ".join(f"{k}={v!r}" for k, v in step["arguments"].items())
+        result = step["result"] if len(step["result"]) <= 200 else step["result"][:200].rstrip() + "…"
+        lines.append(f"{i}. `{step['tool']}({args})`\n   → {result}")
+    return "\n".join(lines)
+
+
 def format_chat_answer(turn: dict) -> str:
     if "error" in turn:
         return f"⚠️ **Error:** {turn['error']}"
+    if "agent_answer" in turn:
+        answer = turn["agent_answer"]
+        parts = [answer["text"]]
+        if answer["stopped_at_cap"]:
+            parts.append("_(stopped at the step limit)_")
+        parts.append("**🤖 Tool calls:**\n" + format_trajectory(answer["trajectory"]))
+        return "\n\n".join(p for p in parts if p)
     answer = turn["answer"]
     parts = []
     if answer["standalone_question"] != turn["question"]:
@@ -126,6 +145,8 @@ def format_sources_panel(turns: list[dict], index: int | None) -> tuple[str, str
     heading = f"### Sources for question {index + 1}"
     if "error" in turn:
         return f"{heading}\n_No sources: the question failed._", ""
+    if "agent_answer" in turn:
+        return f"{heading}\n_Agent mode: see the tool-call trace under the answer instead._", ""
 
     answer = turn["answer"]
     context = answer["retrieved"][:answer["context_size"]]
@@ -174,6 +195,8 @@ class ChatHandlers:
     def cost_line(self, turn: dict | None = None) -> str:
         if not turn or "error" in turn:
             return self.rag.tracker.summary()
+        if "agent_answer" in turn:
+            return f"This answer: ${turn['agent_answer']['cost']:.5f} · {self.rag.tracker.summary()}"
         answer = turn["answer"]
         if answer["cached"]:
             this = "$0 (answer from cache)"
@@ -187,7 +210,9 @@ class ChatHandlers:
         tracker = self.rag.tracker
         this_cost = "$0.00000"
         this_tokens = "—"
-        if turn and "answer" in turn:
+        if turn and "agent_answer" in turn:
+            this_cost = f"${turn['agent_answer']['cost']:.5f}"
+        elif turn and "answer" in turn:
             answer = turn["answer"]
             this_cost = "$0 (cached)" if answer["cached"] else f"${answer['cost']:.5f}"
             if answer.get("input_tokens"):
@@ -202,8 +227,9 @@ class ChatHandlers:
         ]
         return "| | |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
 
-    def ask(self, message: str, chat: list, turns: list):
-        """Generator: the reply bubble shows each stage, then the answer as it streams in."""
+    def ask(self, message: str, chat: list, turns: list, agent_mode: bool = False, progress=gr.Progress()):
+        """Generator: the reply bubble shows each stage, then the answer as it streams in.
+        In agent mode, the loop runs non-streamed and the trace is shown once it's done."""
         if not message or not message.strip():
             raise gr.Error("Please enter a question.")
         question = message.strip()
@@ -215,16 +241,22 @@ class ChatHandlers:
         yield ("", list(chat), *waiting)
 
         try:
-            for kind, value in self.rag.ask_stream(question, history):
-                if kind == "stage":
-                    chat[-1] = {"role": "assistant", "content": f"⏳ {STAGE_TEXT[value]}"}
-                elif kind == "delta":
-                    chat[-1] = {"role": "assistant", "content": value + " ▌"}
-                else:
-                    turn = {"question": question, "answer": asdict(value)}
-                    break
-                # a fresh list per update, so every streamed frame is its own snapshot
-                yield (gr.skip(), list(chat), *waiting)
+            if agent_mode:
+                progress(0.20, desc="Agent is thinking and choosing tools…")
+                chat[-1] = {"role": "assistant", "content": "⏳ Agent is thinking and choosing tools…"}
+                answer = run_agent(question, self.rag, self.rag.client, self.rag.tracker)
+                turn = {"question": question, "agent_answer": asdict(answer)}
+            else:
+                for kind, value in self.rag.ask_stream(question, history):
+                    if kind == "stage":
+                        chat[-1] = {"role": "assistant", "content": f"⏳ {STAGE_TEXT[value]}"}
+                    elif kind == "delta":
+                        chat[-1] = {"role": "assistant", "content": value + " ▌"}
+                    else:
+                        turn = {"question": question, "answer": asdict(value)}
+                        break
+                    # a fresh list per update, so every streamed frame is its own snapshot
+                    yield (gr.skip(), list(chat), *waiting)
         except (RuntimeError, openai.OpenAIError) as e:
             turn = {"question": question, "error": str(e)}
 
@@ -335,6 +367,10 @@ def build_ui(rag: RAG) -> gr.Blocks:
                                               "“what about the second one?” work too.")
                 message = gr.Textbox(show_label=False, lines=1, max_lines=4, submit_btn="Ask",
                                      placeholder="Ask a question or a follow-up…")
+                agent_mode = gr.Checkbox(
+                    label="🤖 Agent mode (model chooses search / calculator / quote_exact on its own)",
+                    value=False,
+                )
 
                 gr.Markdown("**Related**", elem_id="suggest-label")
                 with gr.Row(elem_id="suggest-row"):
@@ -342,7 +378,6 @@ def build_ui(rag: RAG) -> gr.Blocks:
 
                 with gr.Accordion("Example questions", open=False):
                     gr.Examples(EXAMPLES, inputs=message)
-
             with gr.Column(scale=2):
                 with gr.Tabs():
                     with gr.Tab("Cost — live"):
@@ -374,7 +409,7 @@ def build_ui(rag: RAG) -> gr.Blocks:
             gr.Markdown(load_ablation_table())
 
         ask_outputs = [message, chat, turns, selected, sources, others, cost, cost_table, *suggestion_buttons]
-        message.submit(handlers.ask, [message, chat, turns], ask_outputs, api_name="ask")
+        message.submit(handlers.ask, [message, chat, turns, agent_mode], ask_outputs, api_name="ask")
         chat.select(handlers.select, [turns], [selected, sources, others])
         chat.like(handlers.feedback, [turns], None)
         clear_outputs = [chat, turns, selected, sources, others, export_file, cost, cost_table, *suggestion_buttons]
