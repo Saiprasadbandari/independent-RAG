@@ -7,6 +7,7 @@ from pathlib import Path
 import gradio as gr
 import openai
 
+from app.checklist import build_checklist_page
 from app.export import export
 from app.rag import RAG, cited_refs
 from app.utils import DATA_DIR, format_citation, format_retrieved
@@ -248,5 +249,9 @@ def build_ui(rag: RAG) -> gr.Blocks:
         chat_pdf.click(lambda t: handlers.export_conversation(t, "pdf"), [turns], export_file)
         answer_txt.click(lambda t, s: handlers.export_answer(t, s, "txt"), [turns, selected], export_file)
         answer_pdf.click(lambda t, s: handlers.export_answer(t, s, "pdf"), [turns, selected], export_file)
+
+    # a second page listing every course task, ticked automatically where the repo shows it
+    with demo.route("Project checklist", "/checklist"):
+        build_checklist_page()
 
     return demo
