@@ -18,9 +18,13 @@ RERANK_MODEL = "BAAI/bge-reranker-base"
 # the cross-encoder reads question + passage together; our ~1000-char chunks fit well under this
 RERANK_MAX_LENGTH = 512
 RERANK_BATCH_SIZE = 16
-# passages need at least this relevance to reach the answer prompt. Relevant passages land
-# anywhere from ~0.4 to 1.0, on-topic-but-useless ones under ~0.05.
-MIN_RELEVANCE = 0.1
+# Confidence threshold: passages need at least this relevance to reach the answer prompt, and a
+# question whose best passage scores below it is refused without calling the model. Chosen from
+# the eval runner's threshold table (local mode, 44 questions): 0.05 refuses as many
+# out-of-scope / on-topic-unanswerable questions as 0.1 (2 of 4) with no wrong refusals, where
+# 0.1 wrongly refused a casually worded answerable question (best passage 0.097). Re-check it on
+# the api-mode table.
+MIN_RELEVANCE = 0.05
 
 
 def pick_device() -> str:

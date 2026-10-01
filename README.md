@@ -72,7 +72,8 @@ similarity threshold) skip re-ranking and the LLM call.
   so a question is only treated as on-topic when a vector match clears the similarity threshold.
 - **Re-ranking** (`app/rerank.py`): the merged FAISS + BM25 candidates (up to 30) are scored by the
   `BAAI/bge-reranker-base` cross-encoder from 0 to 1 for how well they answer the question.
-  Passages scoring at least 0.1 are kept, and the context is built from the best of them (see
+  Passages scoring at least 0.05 are kept (the confidence threshold, below which a question is
+  refused without calling the model; chosen from the eval runner's threshold table), and the context is built from the best of them (see
   "Keeping the answer prompt small" below). It runs on your GPU (Apple
   Silicon via MPS, NVIDIA via CUDA, CPU otherwise) with no API calls. The model (~1.1 GB)
   downloads from Hugging Face on first start; after that it loads in ~10 s and scores a question

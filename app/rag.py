@@ -123,6 +123,7 @@ NEIGHBOUR_TOP = 2             # the best passages also pull in the chunks that f
 NEIGHBOUR_STEPS = 6           # up to this far ahead: lists and articles cross chunk boundaries
 TRIM_MIN_CHARS = 400          # ranked passages longer than this are trimmed...
 SENTENCE_MIN_RELEVANCE = 0.1  # ...to the sentences scoring at least this
+NEIGHBOUR_MIN_RELEVANCE = 0.1  # a following chunk joins the context when it scores at least this
 
 # progress stages RAG.ask reports through on_stage, in order
 STAGES = ("rewriting", "searching", "reranking", "generating", "checking")
@@ -581,7 +582,7 @@ class RAG:
         self.min_score = MIN_SCORES.get(embedding_id, MIN_SCORE)
         chat_id = getattr(client, "chat_model", CHAT_MODEL)
         context_id = (CONTEXT_PASSAGES, RELATIVE_RELEVANCE, NEIGHBOUR_TOP, NEIGHBOUR_STEPS,
-                      TRIM_MIN_CHARS, SENTENCE_MIN_RELEVANCE)
+                      TRIM_MIN_CHARS, SENTENCE_MIN_RELEVANCE, NEIGHBOUR_MIN_RELEVANCE)
 
         # a rebuilt index or a changed model/prompt/threshold invalidates the caches
         index_id = fingerprint([c["text"] for c in retriever.chunks])
@@ -655,7 +656,7 @@ class RAG:
                 if i in have:
                     break
                 pending.append(i)
-                if scores[i] < self.reranker.min_relevance:
+                if scores[i] < NEIGHBOUR_MIN_RELEVANCE:
                     misses += 1
                     if misses == 2:
                         break
