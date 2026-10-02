@@ -14,6 +14,7 @@ from app.flow import FLOW_CSS, build_flow_page
 from app.export import export
 from app.rag import RAG, cited_refs
 from app.send_message import send_to_teams
+from app.trace import EMPTY_TRACE, format_trace
 from app.utils import DATA_DIR, format_citation, format_retrieved
 
 FEEDBACK_PATH = DATA_DIR / "feedback.jsonl"
@@ -239,8 +240,8 @@ class ChatHandlers:
         history = [(t["answer"]["standalone_question"] or t["question"], t["answer"]["text"])
                    for t in turns if "answer" in t]
         chat = chat + [{"role": "user", "content": question}, {"role": "assistant", "content": "⏳ Starting…"}]
-        # skipped during streaming: turns, index, sources, others, cost_line, cost_table, 3x suggestion button
-        waiting = (gr.skip(),) * 9
+        # skipped during streaming: turns, index, sources, others, trace, cost_line, cost_table, 3x suggestion button
+        waiting = (gr.skip(),) * 10
         yield ("", list(chat), *waiting)
 
         try:
@@ -271,13 +272,13 @@ class ChatHandlers:
         picks = suggest_followups(question, asked)
         suggestion_updates = [gr.update(value=p, visible=bool(p)) for p in picks]
 
-        yield (gr.skip(), chat, turns, index, *format_sources_panel(turns, index),
+        yield (gr.skip(), chat, turns, index, *format_sources_panel(turns, index), format_trace(turns, index),
               self.cost_line(turn), self.cost_table(turn), *suggestion_updates)
 
     def select(self, turns: list, evt: gr.SelectData):
         index = evt.index if isinstance(evt.index, int) else evt.index[0]
         turn_index = min(index // 2, len(turns) - 1) if turns else None
-        return (turn_index, *format_sources_panel(turns, turn_index))
+        return (turn_index, *format_sources_panel(turns, turn_index), format_trace(turns, turn_index))
 
     def feedback(self, turns: list, evt: gr.LikeData):
         index = evt.index if isinstance(evt.index, int) else evt.index[0]
@@ -319,7 +320,7 @@ class ChatHandlers:
 
     def clear(self):
         hidden = gr.update(value="", visible=False)
-        return ([], [], None, EMPTY_SOURCES, "", None, self.rag.tracker.summary(),
+        return ([], [], None, EMPTY_SOURCES, "", EMPTY_TRACE, None, self.rag.tracker.summary(),
                self.cost_table(None), hidden, hidden, hidden)
 
     def pick_suggestion(self, label: str):
@@ -396,6 +397,10 @@ def build_ui(rag: RAG) -> gr.Blocks:
                         with gr.Accordion("Other retrieved candidates", open=False):
                             others = gr.Markdown(max_height=300)
 
+        # what happened to the selected question at each step: FAISS, BM25, fusion, gate, re-ranker, timings
+        with gr.Accordion("🔍 Retrieval trace: what happened at each step", open=False):
+            trace_panel = gr.Markdown(EMPTY_TRACE)
+
         with gr.Row():
             clear = gr.Button("Clear conversation", size="sm")
             chat_txt = gr.Button("Export .txt", size="sm")
@@ -417,11 +422,13 @@ def build_ui(rag: RAG) -> gr.Blocks:
         with gr.Accordion("Ablation table — RAG day 2 (vector-only → +re-ranking → +BM25)", open=True):
             gr.Markdown(load_ablation_table())
 
-        ask_outputs = [message, chat, turns, selected, sources, others, cost, cost_table, *suggestion_buttons]
+        ask_outputs = [message, chat, turns, selected, sources, others, trace_panel, cost, cost_table,
+                       *suggestion_buttons]
         message.submit(handlers.ask, [message, chat, turns, agent_mode], ask_outputs, api_name="ask")
-        chat.select(handlers.select, [turns], [selected, sources, others])
+        chat.select(handlers.select, [turns], [selected, sources, others, trace_panel])
         chat.like(handlers.feedback, [turns], None)
-        clear_outputs = [chat, turns, selected, sources, others, export_file, cost, cost_table, *suggestion_buttons]
+        clear_outputs = [chat, turns, selected, sources, others, trace_panel, export_file, cost, cost_table,
+                         *suggestion_buttons]
         clear.click(handlers.clear, None, clear_outputs)
         # the chatbot's own 🗑 icon must forget the conversation too, or follow-ups use stale history
         chat.clear(handlers.clear, None, clear_outputs)

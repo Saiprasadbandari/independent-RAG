@@ -61,6 +61,7 @@ re-ranker, Qwen2.5-3B), *api* ones on `text-embedding-3-small` + `gpt-4o-mini`.
 | 44 | 02 Oct 00:20 | Sai | Agent eval questions audited against the real course spec repo (`GenAI_week`, not just the internal checklist) | Used a free-text `"scenario"` field instead of the required `"sub_type"` with 11 exact enum values | Rewrote all 11 questions to the correct taxonomy; verified `rephrase_retry`'s wording genuinely fails/succeeds via `retrieval_checker.py` (api mode) | All 11 required sub-types present, 60 questions total, minimums/priority checks still pass |
 | 45 | 02 Oct 00:42 | Sai | RAG demo questions in the README against the same spec repo | Used invented categories instead of the 6 course-required scenarios (Single chunk, Multiple chunks, Follow-up, Out of scope, Prompt injection, Exact term) | Rewrote the section to the 6 required scenarios, verified against real corpus pages | `readme_rag_demo` checklist check still passes |
 | 46 | 02 Oct 07:26 | Sai | Teams webhook, after a user report that a real send wasn't arriving | `.env` pointed at a different flow ("Send webhook alerts to a channel") that had failed on every single run since 01 Oct — an "Attachments is null" error in its own branching logic, unrelated to the #38 payload fix | Repointed `.env` at the verified-working "Send webhook alerts to General" flow (confirmed via Power Automate run history, not guessed) | New run Succeeded; message confirmed arrived in Teams by the user |
+| 47 | 02 Oct 12:30 | Rayyan | Retrieval trace: six kinds of question (normal, article look-up, "the next one", off-topic, greeting, repeat from the cache), then a retrieval-only regression check on all questions (local) | The trace shows each step: on the Article 5 fine question, the Article 99 passage (p. 115) was FAISS #6, BM25 #5, #4 after fusion and #1 after re-ranking; pizza stopped at the gate in 18 ms with no model call | — | Retrieval unchanged: R@1 0.63, R@5 0.87, MRR 0.72 before and after, no question fixed or regressed; about 0.03 s added per question |
 
 ## 2. Improvements
 
@@ -109,6 +110,7 @@ re-ranker, Qwen2.5-3B), *api* ones on `text-embedding-3-small` + `gpt-4o-mini`.
 | 02 Oct 00:20 | Sai | Agent eval questions rewritten to the correct `sub_type` taxonomy | 44 |
 | 02 Oct 00:42 | Sai | RAG demo questions rewritten to the 6 required scenarios | 45 |
 | 02 Oct 07:26 | Sai | Teams webhook repointed at the working flow | 46 |
+| 02 Oct 12:30 | Rayyan | Retrieval trace under each RAG answer: FAISS and BM25 ranks, fusion, the off-topic gate, re-ranker cut-off, what became of each passage, time per step | 47 |
 
 ## 3. How the numbers moved
 
