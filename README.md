@@ -282,6 +282,13 @@ What it shows:
 
 ## Using the app
 
+- **Retrieval trace**: open "🔍 Retrieval trace" under the chat to see what happened to the
+  selected question at each step: whether it was cleaned or rewritten, cache hits, how many
+  passages FAISS and BM25 returned and how long each took, the off-topic gate (best similarity
+  against the threshold), the re-ranker's cut-off, and a table of every candidate with its rank in
+  FAISS, in BM25, after fusion and after re-ranking, and whether it was sent, trimmed, added as a
+  following chunk or dropped (and why). Click an earlier answer to see its trace. Recorded by
+  `RAG.ask_stream` in `Answer.trace` and rendered by `app/trace.py`; no extra model calls.
 - **Conversation memory**: the answer model receives the last 2 exchanges (earlier answers
   trimmed to 600 characters, citation markers removed) along with each new question, so it can
   follow up on what was said ("explain that more simply"). Retrieval can't read history, so a

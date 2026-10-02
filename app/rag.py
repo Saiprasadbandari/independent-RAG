@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -34,6 +35,9 @@ RERANK_CANDIDATES = 15
 # that pure vector search can miss — see the "exact_term" stress-test category.
 USE_BM25 = True
 BM25_CANDIDATES = 15
+# where each candidate came from, kept for the retrieval trace (and in the retrieval cache)
+TRACE_FIELDS = ("vector_rank", "bm25_rank", "bm25_score", "fused_rank")
+TRACE_VERSION = 1
 # The other switches for the ablation table (scripts/eval_runner.py --ablation flips them per
 # row): cross-encoder re-ranking, and rewriting follow-ups into standalone questions for search.
 USE_RERANK = True
@@ -46,7 +50,7 @@ GREETING_RE = re.compile(r"^\s*(hi+|hello+|hey+|greetings|good\s+(morning|aftern
 GREETING_REPLY = ("Hi! Ask me anything about the EU AI Act (Regulation (EU) 2024/1689) -- for example, "
                   "prohibited practices, high-risk systems, obligations, or penalties.")
 # bump when question or answer handling changes so cached answers are regenerated
-ANSWER_FORMAT_VERSION = 3
+ANSWER_FORMAT_VERSION = 4
 
 # "[2]", "[1, 3]", "[2-4]" — brackets holding only passage numbers
 REF_BRACKET_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,]\s*\d+)*)\s*\]")
@@ -535,6 +539,9 @@ class Answer:
     # [Source: X, p. Y] labels the answer wrote that match no chunk actually sent (see
     # forged_citations) -- a citation check, not just an out-of-range [N] bracket number
     unverified_citations: list = field(default_factory=list)
+    # what happened at each step, for the retrieval trace in the UI: how the question was
+    # rewritten, cache hits, the off-topic gate, the re-ranker's cut-off and time per stage
+    trace: dict = field(default_factory=dict)
 
 
 def cited_refs(text: str, chunks: list[dict]) -> tuple[list[int], list[int]]:
@@ -614,7 +621,7 @@ class RAG:
         index_id = fingerprint([c["text"] for c in retriever.chunks])
         self.retrieval_cache = DiskCache(cache_dir / "retrieval.json",
                                          fingerprint(index_id, embedding_id, RERANK_CANDIDATES,
-                                                     USE_BM25, BM25_CANDIDATES, self.min_score))
+                                                     USE_BM25, BM25_CANDIDATES, self.min_score, TRACE_VERSION))
         self.rerank_cache = DiskCache(cache_dir / "rerank.json", fingerprint(index_id, reranker_id))
         self.query_cache = DiskCache(cache_dir / "answers.json", fingerprint(
             index_id, embedding_id, chat_id, SYSTEM_PROMPT, top_k, self.min_score, MAX_TOKENS,
@@ -627,34 +634,51 @@ class RAG:
         print(f"cache: {len(self.query_cache)} answers, {len(self.retrieval_cache)} retrievals, "
               f"{len(self.rerank_cache)} re-rankings")
 
-    def retrieve(self, question: str) -> list[dict]:
+    def retrieve(self, question: str, trace: dict | None = None) -> list[dict]:
+        trace = {} if trace is None else trace
         key = normalize_query(question)
         hit = self.retrieval_cache.get(key)
         if hit is not None:
-            return [{**self.retriever.chunks[i], "score": s, **({"keyword_only": True} if keyword_only else {})}
-                    for i, s, keyword_only in hit]
+            trace["retrieval_cached"] = True
+            return [{**self.retriever.chunks[entry[0]], "score": entry[1],
+                     **({"keyword_only": True} if entry[2] else {}), **(entry[3] if len(entry) > 3 else {})}
+                    for entry in hit]
 
+        timings = trace.setdefault("timings", {})
+        start = time.perf_counter()
         vector_hits = self.retriever.search(question, k=RERANK_CANDIDATES)
+        timings["embed + FAISS"] = time.perf_counter() - start
+        for rank, c in enumerate(vector_hits, 1):
+            c["vector_rank"] = rank
         if self.bm25:
+            start = time.perf_counter()
             keyword_hits = self.bm25.search(question, k=BM25_CANDIDATES)
+            for rank, c in enumerate(keyword_hits, 1):
+                c["bm25_rank"] = rank
             retrieved = reciprocal_rank_fusion(vector_hits, keyword_hits)
+            for rank, c in enumerate(retrieved, 1):
+                c["fused_rank"] = rank
             for c in retrieved:
                 if "score" not in c:
                     # a BM25-only hit has no cosine similarity. It sits exactly at this model's
                     # off-topic threshold so it always reaches the re-ranker, which judges it like
                     # any other candidate, and is flagged so no made-up similarity is displayed
                     c["score"], c["keyword_only"] = self.min_score, True
+            timings["BM25 + fusion"] = time.perf_counter() - start
         else:
             retrieved = vector_hits
 
-        self.retrieval_cache.set(key, [[c["id"], c["score"], c.get("keyword_only", False)] for c in retrieved])
+        self.retrieval_cache.set(key, [[c["id"], c["score"], c.get("keyword_only", False),
+                                        {f: c[f] for f in TRACE_FIELDS if f in c}] for c in retrieved])
         return retrieved
 
-    def rerank(self, question: str, candidates: list[dict]) -> list[dict]:
+    def rerank(self, question: str, candidates: list[dict], trace: dict | None = None) -> list[dict]:
         """Candidates with a "relevance" score attached, most relevant first."""
         key = normalize_query(question)
         judged = dict(self.rerank_cache.get(key) or {})
         unjudged = [c for c in candidates if str(c["id"]) not in judged]
+        if trace is not None:
+            trace["reranked"] = {"scored": len(unjudged), "cached": len(candidates) - len(unjudged)}
         if unjudged:
             relevance = self.reranker.score(question, unjudged)
             judged.update({str(c["id"]): p for c, p in zip(unjudged, relevance)})
@@ -755,12 +779,15 @@ class RAG:
     def needs_rewrite(self, asked: str, history: list[tuple[str, str]] | None) -> bool:
         return bool(self.use_rewrite and history and asked and looks_like_follow_up(asked))
 
-    def rewrite(self, asked: str, history: list[tuple[str, str]] | None) -> str:
+    def rewrite(self, asked: str, history: list[tuple[str, str]] | None, trace: dict | None = None) -> str:
         """The question to search with: navigation ("the next one") resolved by counting, other
         follow-ups rewritten by the model, standalone questions unchanged."""
         if not self.needs_rewrite(asked, history):
             return asked
-        return resolve_navigation(asked, history) or self.condense(asked, history)
+        navigated = resolve_navigation(asked, history)
+        if trace is not None:
+            trace["rewrite"] = "navigation" if navigated else "model"
+        return navigated or self.condense(asked, history)
 
     def referenced_chunks(self, question: str) -> list[dict]:
         """The chunks of each article or annex the question names, found by heading."""
@@ -777,11 +804,14 @@ class RAG:
                     found.append({**self.retriever.chunks[i], "score": self.min_score, "reference": label})
         return found
 
-    def search_steps(self, standalone: str):
+    def search_steps(self, standalone: str, trace: dict | None = None):
         """Retrieval for one question: yields ("stage", name) events and returns
-        (candidates, ranked, context). ask_stream streams it; search() runs it to the end."""
+        (candidates, ranked, context). ask_stream streams it; search() runs it to the end.
+        `trace` collects what each step decided, for the retrieval trace in the UI."""
+        trace = {} if trace is None else trace
+        timings = trace.setdefault("timings", {})
         # nothing left after removing instructions: there's no question to search for
-        candidates = self.retrieve(standalone) if standalone else []
+        candidates = self.retrieve(standalone, trace) if standalone else []
         references = self.referenced_chunks(standalone) if standalone else []
         if references:
             by_id = {c["id"]: c for c in candidates}
@@ -793,11 +823,25 @@ class RAG:
         # exists does
         on_topic = bool(references) or any(not c.get("keyword_only") and c["score"] >= self.min_score
                                            for c in candidates)
+        similarities = [c["score"] for c in candidates if not c.get("keyword_only") and not c.get("reference")]
+        trace["gate"] = {"passed": on_topic, "threshold": self.min_score, "by_lookup": bool(references),
+                         "best_similarity": max(similarities, default=None)}
+        trace["lookup"] = list(dict.fromkeys(r["reference"] for r in references))
         plausible = relevant_chunks(candidates, self.min_score) if on_topic else []
         if self.use_rerank and plausible:
             yield "stage", "reranking"
-            ranked = self.rerank(standalone, plausible)
+            start = time.perf_counter()
+            ranked = self.rerank(standalone, plausible, trace)
+            timings["re-rank"] = time.perf_counter() - start
+            start = time.perf_counter()
             context = self.select_context(standalone, ranked)
+            timings["build context"] = time.perf_counter() - start
+            if ranked:
+                trace["floor"] = {"min_relevance": self.reranker.min_relevance,
+                                  "relative": RELATIVE_RELEVANCE, "best": ranked[0]["relevance"],
+                                  "value": max(self.reranker.min_relevance,
+                                               RELATIVE_RELEVANCE * ranked[0]["relevance"]),
+                                  "max_passages": CONTEXT_PASSAGES}
         else:
             ranked = plausible
             context = plausible[:self.top_k]
@@ -806,6 +850,7 @@ class RAG:
             pinned = [next((c for c in ranked if c["id"] == r["id"]), r) for r in references]
             pinned_ids = {c["id"] for c in pinned}
             context = pinned + [c for c in context if c["id"] not in pinned_ids]
+            trace["pinned"] = True
         return candidates, ranked, context
 
     def search(self, standalone: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -823,6 +868,11 @@ class RAG:
         ("answer", Answer)."""
         question = question.strip()
         start = self.tracker.total
+        began = time.perf_counter()
+        trace: dict = {"timings": {}, "models": {
+            "embeddings": getattr(self.client, "embedding_model", EMBEDDING_MODEL),
+            "answers": getattr(self.client, "chat_model", CHAT_MODEL),
+            "re-ranker": self.reranker.name if self.reranker else None}}
 
         # act on the question minus any injected instructions or fake context; the chat shows
         # the cleaned version as "Interpreted as" whenever it differs
@@ -832,13 +882,18 @@ class RAG:
             # it through the "only from context" pipeline, which would otherwise refuse it
             answer = Answer(question=question, text=GREETING_REPLY, standalone_question=asked,
                             in_scope=True, cost=0.0, confidence=1.0, confidence_label="high",
-                            confidence_notes=["a greeting, answered directly, no search needed"])
+                            confidence_notes=["a greeting, answered directly, no search needed"],
+                            trace={"greeting": True, "total": time.perf_counter() - began})
             yield "answer", answer
             return
         standalone = asked
+        if asked != question:
+            trace["cleaned"] = True
         if self.needs_rewrite(asked, history):
             yield "stage", "rewriting"
-            standalone = self.rewrite(asked, history)
+            step = time.perf_counter()
+            standalone = self.rewrite(asked, history, trace)
+            trace["timings"]["rewrite"] = time.perf_counter() - step
 
         # conversation memory: the answer model sees the last exchanges, so the same words can
         # need a different answer in a different conversation, and the cache key says which
@@ -848,24 +903,34 @@ class RAG:
             key = fingerprint(key, normalize_query(asked), [(normalize_query(q), a) for q, a in recent])
         hit = self.query_cache.get(key)
         if hit is not None:
+            # the trace shown is the one recorded when this answer was first generated
             yield "answer", Answer(**{**hit, "question": question, "standalone_question": standalone,
-                                      "cost": self.tracker.total - start, "cached": True})
+                                      "cost": self.tracker.total - start, "cached": True,
+                                      "trace": {**hit.get("trace", {}), "answer_cached": True,
+                                                "served_in": time.perf_counter() - began}})
             return
 
         yield "stage", "searching"
-        candidates, ranked, context = yield from self.search_steps(standalone)
+        candidates, ranked, context = yield from self.search_steps(standalone, trace)
 
         yield "stage", "generating"
+        step, first_words = time.perf_counter(), None
         so_far = ""
         # search used the rewritten question; the answer gets the user's own question plus the
         # recent exchanges (and the rewrite as a hint), as the course describes
         for event in stream_answer(asked, context, self.client, self.tracker, recent, standalone):
             if event[0] == "delta":
+                if first_words is None:
+                    first_words = time.perf_counter() - step
                 so_far += event[1]
                 yield "delta", so_far
             else:
                 _, text, truncated, input_tokens, output_tokens = event
+        trace["timings"]["write answer"] = time.perf_counter() - step
+        if first_words is not None:
+            trace["first_words"] = first_words
         yield "stage", "checking"
+        step = time.perf_counter()
         in_scope = not is_refusal(text)
         sources = cited_sources(text, context) if in_scope else []
         # the passages the model saw first, then every other candidate once
@@ -895,6 +960,9 @@ class RAG:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+        trace["timings"]["check"] = time.perf_counter() - step
+        trace["total"] = time.perf_counter() - began
+        answer.trace = trace
         # a cut-off answer isn't worth keeping; asking again might fit (e.g. after a prompt tweak)
         if not truncated:
             self.query_cache.set(key, asdict(answer))
