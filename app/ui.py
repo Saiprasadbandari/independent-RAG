@@ -10,6 +10,7 @@ import openai
 
 from app.agent import run_agent
 from app.checklist import build_checklist_page
+from app.evaluation import EVALUATION_CSS, build_evaluation_page
 from app.flow import FLOW_CSS, build_flow_page
 from app.routing import ROUTING_CSS, build_routing_page
 from app.export import export
@@ -372,7 +373,7 @@ footer { display: none !important; }
                                    padding: 4px 6px !important; }
 #trace-panel td:first-child, #trace-panel th:first-child,
 #trace-panel td:last-child, #trace-panel th:last-child { white-space: nowrap; }
-""" + FLOW_CSS + ROUTING_CSS + TESTING_LOG_CSS
+""" + FLOW_CSS + ROUTING_CSS + TESTING_LOG_CSS + EVALUATION_CSS
 
 
 def build_ui(rag: RAG) -> gr.Blocks:
@@ -478,6 +479,10 @@ def build_ui(rag: RAG) -> gr.Blocks:
     # the whole system as a clickable flowchart
     with demo.route("How it works", "/flow"):
         build_flow_page()
+
+    # the saved eval reports in data/eval/: retrieval, ablation, agent vs RAG, injection
+    with demo.route("Evaluation", "/evaluation"):
+        build_evaluation_page()
 
     # every test since the first commit, from scripts/TESTING_LOG.md
     with demo.route("Testing log", "/testing"):
