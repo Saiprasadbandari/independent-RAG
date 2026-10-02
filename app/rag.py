@@ -40,6 +40,11 @@ USE_RERANK = True
 USE_QUERY_REWRITE = True
 NO_INFO = "I don't have information about that in the provided documents."
 TRUNCATED_NOTE = "\n\n*(Answer cut off at the length limit.)*"
+# a bare greeting, nothing else -- "hi, what are the prohibited practices" still goes to
+# retrieval as normal, only an input that IS just a greeting short-circuits
+GREETING_RE = re.compile(r"^\s*(hi+|hello+|hey+|greetings|good\s+(morning|afternoon|evening))[\s!.,]*$", re.I)
+GREETING_REPLY = ("Hi! Ask me anything about the EU AI Act (Regulation (EU) 2024/1689) -- for example, "
+                  "prohibited practices, high-risk systems, obligations, or penalties.")
 # bump when question or answer handling changes so cached answers are regenerated
 ANSWER_FORMAT_VERSION = 3
 
@@ -822,6 +827,14 @@ class RAG:
         # act on the question minus any injected instructions or fake context; the chat shows
         # the cleaned version as "Interpreted as" whenever it differs
         asked = sanitize_question(question)
+        if GREETING_RE.match(asked):
+            # a bare greeting has nothing to retrieve -- answer directly instead of running
+            # it through the "only from context" pipeline, which would otherwise refuse it
+            answer = Answer(question=question, text=GREETING_REPLY, standalone_question=asked,
+                            in_scope=True, cost=0.0, confidence=1.0, confidence_label="high",
+                            confidence_notes=["a greeting, answered directly, no search needed"])
+            yield "answer", answer
+            return
         standalone = asked
         if self.needs_rewrite(asked, history):
             yield "stage", "rewriting"
