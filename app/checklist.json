@@ -18,9 +18,9 @@
           "title": "Assignment 0: corpus preparation",
           "items": [
             {"label": "scripts/extract.py", "auto": "file:scripts/extract.py"},
-            {"label": "data/corpus.json and data/sample.json", "auto": "corpus_files"},
+            {"label": "data/corpus.json and data/sample.json", "auto": "corpus_files", "by": "Sai"},
             {"label": "scripts/EXTRACTION_REPORT.md", "auto": "file:scripts/EXTRACTION_REPORT.md"},
-            {"label": "corpus.json + sample.json uploaded to Teams, repo link and stats posted", "done": true}
+            {"label": "corpus.json + sample.json uploaded to Teams, repo link and stats posted", "done": true, "by": "Sai"}
           ]
         },
         {
