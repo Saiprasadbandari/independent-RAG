@@ -11,9 +11,11 @@ import openai
 from app.agent import run_agent
 from app.checklist import build_checklist_page
 from app.flow import FLOW_CSS, build_flow_page
+from app.routing import ROUTING_CSS, build_routing_page
 from app.export import export
 from app.rag import RAG, cited_refs
 from app.send_message import send_to_teams
+from app.testing_log import TESTING_LOG_CSS, build_testing_log_page
 from app.trace import EMPTY_TRACE, format_trace
 from app.utils import DATA_DIR, format_citation, format_retrieved
 
@@ -370,7 +372,7 @@ footer { display: none !important; }
                                    padding: 4px 6px !important; }
 #trace-panel td:first-child, #trace-panel th:first-child,
 #trace-panel td:last-child, #trace-panel th:last-child { white-space: nowrap; }
-""" + FLOW_CSS
+""" + FLOW_CSS + ROUTING_CSS + TESTING_LOG_CSS
 
 
 def build_ui(rag: RAG) -> gr.Blocks:
@@ -476,5 +478,13 @@ def build_ui(rag: RAG) -> gr.Blocks:
     # the whole system as a clickable flowchart
     with demo.route("How it works", "/flow"):
         build_flow_page()
+
+    # every test since the first commit, from scripts/TESTING_LOG.md
+    with demo.route("Testing log", "/testing"):
+        build_testing_log_page()
+
+    # one question per route, run through the agent to check it calls the right tools
+    with demo.route("Routing", "/routing"):
+        build_routing_page(rag)
 
     return demo
