@@ -186,6 +186,8 @@
           "items": [
             {"label": "Project checklist page", "done": true, "files": ["app/checklist.py"]},
             {"label": "How it works page (clickable flowchart)", "done": true, "files": ["app/flow.py"]},
+            {"label": "Testing log page", "done": true, "files": ["app/testing_log.py", "scripts/TESTING_LOG.md"]},
+            {"label": "Routing page: one question per route, run through the agent", "done": true, "files": ["app/routing.py"]},
             {"label": "Agent tool calls on the local model", "done": true, "files": ["app/local_models.py::template_messages", "app/local_models.py::tool_calls", "app/local_models.py::LocalMessage"]},
             {"label": "Mock client for testing the agent without a key", "done": true, "files": ["scripts/mock_client.py", "scripts/test_agent_local.py"]}
           ]
