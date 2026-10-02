@@ -360,6 +360,10 @@ footer { display: none !important; }
 #chat-tools { gap: 6px; flex-wrap: wrap; }
 #chat-tools button { flex: 0 0 auto !important; min-width: 0 !important; width: auto !important;
                      padding: 2px 10px !important; font-size: 12px !important; }
+#chat-box { border: 1px solid var(--border-color-primary); border-radius: 12px; overflow: hidden; }
+#chat-box .block { border: none !important; box-shadow: none !important; }
+#agent-toggle { padding: 2px 12px 8px !important; }
+#agent-toggle label span { font-size: 13px; color: var(--body-text-color-subdued); }
 #trace-panel { font-size: 13px; }
 #trace-panel table { display: block; overflow-x: auto; font-size: 12px; }
 #trace-panel th, #trace-panel td { word-break: normal !important; overflow-wrap: normal !important;
@@ -381,10 +385,19 @@ def build_ui(rag: RAG) -> gr.Blocks:
 
         with gr.Row():
             with gr.Column(scale=3):
-                chat = gr.Chatbot(label=None, height=520, layout="bubble", show_label=False,
-                                  feedback_options=("Like", "Dislike"), buttons=["copy"],
-                                  placeholder="Ask about the EU AI Act. Follow-ups like "
-                                              "“what about the second one?” work too.")
+                # one box: the conversation, the question field and the agent toggle
+                with gr.Group(elem_id="chat-box"):
+                    chat = gr.Chatbot(label=None, height=520, layout="bubble", show_label=False,
+                                      feedback_options=("Like", "Dislike"), buttons=["copy"],
+                                      placeholder="Ask about the EU AI Act. Follow-ups like "
+                                                  "“what about the second one?” work too.")
+                    message = gr.Textbox(show_label=False, lines=1, max_lines=4, submit_btn="Ask",
+                                         placeholder="Ask a question or a follow-up…")
+                    agent_mode = gr.Checkbox(
+                        label="🤖 Agent mode: the model picks its own tools (search, calculator, quote_exact, "
+                              "get_definition, date_diff)",
+                        value=False, elem_id="agent-toggle",
+                    )
                 # downloads and sending, right under the chat
                 with gr.Row(elem_id="chat-tools"):
                     chat_txt = gr.Button("⬇ Chat .txt", size="sm")
@@ -402,12 +415,6 @@ def build_ui(rag: RAG) -> gr.Blocks:
                     send_confirm = gr.Button("Confirm & Send", variant="primary", visible=False, size="sm")
                     send_cancel = gr.Button("Cancel", visible=False, size="sm")
                 send_status = gr.Markdown()
-                message = gr.Textbox(show_label=False, lines=1, max_lines=4, submit_btn="Ask",
-                                     placeholder="Ask a question or a follow-up…")
-                agent_mode = gr.Checkbox(
-                    label="🤖 Agent mode (model chooses search, calculator, quote_exact, get_definition, date_diff on its own)",
-                    value=False,
-                )
 
                 gr.Markdown("**Related**", elem_id="suggest-label")
                 with gr.Row(elem_id="suggest-row"):
