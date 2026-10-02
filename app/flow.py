@@ -161,7 +161,7 @@ def flow() -> dict:
         node("date_diff", "📅", "time between two dates", specs={"Returns": "days, and months + days"}),
         node("send_message", "📨", "drafts a Teams message, never sends it",
              specs={"Offered only": "when the user's own message asks to send, post or share",
-                    "Sending": "a person clicks Send selected answer to Teams, checks the preview, then Confirm & Send"}),
+                    "Sending": "a person clicks Send to Teams, checks the preview, then Confirm & Send"}),
     ]
     agent_steps = [
         node("Think", "🧠", "the model reads the question and picks a tool, or answers",
@@ -205,7 +205,7 @@ def flow() -> dict:
                      node("Feedback", "👍", "rate the answer", specs={"Saved to": "data/feedback.jsonl"}),
                      node("Export", "🗂️", "the chat or one answer", specs={"Formats": ".txt, .pdf"}),
                      node("Send to Teams", "📨", "human approval before anything is posted",
-                          specs={"Steps": "Send selected answer to Teams → editable preview → Confirm & Send",
+                          specs={"Steps": "Send to Teams → editable preview → Confirm & Send",
                                  "Webhook": "TEAMS_WEBHOOK_URL in .env"}, where="app/send_message.py"),
                  ])
 

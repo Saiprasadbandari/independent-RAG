@@ -320,7 +320,8 @@ class ChatHandlers:
 
     def clear(self):
         hidden = gr.update(value="", visible=False)
-        return ([], [], None, EMPTY_SOURCES, "", EMPTY_TRACE, None, self.rag.tracker.summary(),
+        return ([], [], None, EMPTY_SOURCES, "", EMPTY_TRACE, gr.update(value=None, visible=False),
+                self.rag.tracker.summary(),
                self.cost_table(None), hidden, hidden, hidden)
 
     def pick_suggestion(self, label: str):
@@ -356,6 +357,15 @@ MINIMAL_CSS = """
 .gradio-container { max-width: 1100px !important; margin: auto; }
 footer { display: none !important; }
 #suggest-row button { font-size: 0.85em; text-align: left; white-space: normal; height: auto; }
+#chat-tools { gap: 6px; flex-wrap: wrap; }
+#chat-tools button { flex: 0 0 auto !important; min-width: 0 !important; width: auto !important;
+                     padding: 2px 10px !important; font-size: 12px !important; }
+#trace-panel { font-size: 13px; }
+#trace-panel table { display: block; overflow-x: auto; font-size: 12px; }
+#trace-panel th, #trace-panel td { word-break: normal !important; overflow-wrap: normal !important;
+                                   padding: 4px 6px !important; }
+#trace-panel td:first-child, #trace-panel th:first-child,
+#trace-panel td:last-child, #trace-panel th:last-child { white-space: nowrap; }
 """ + FLOW_CSS
 
 
@@ -375,6 +385,23 @@ def build_ui(rag: RAG) -> gr.Blocks:
                                   feedback_options=("Like", "Dislike"), buttons=["copy"],
                                   placeholder="Ask about the EU AI Act. Follow-ups like "
                                               "“what about the second one?” work too.")
+                # downloads and sending, right under the chat
+                with gr.Row(elem_id="chat-tools"):
+                    chat_txt = gr.Button("⬇ Chat .txt", size="sm")
+                    chat_pdf = gr.Button("⬇ Chat .pdf", size="sm")
+                    answer_txt = gr.Button("⬇ Answer .txt", size="sm")
+                    answer_pdf = gr.Button("⬇ Answer .pdf", size="sm")
+                    send_btn = gr.Button("📨 Send to Teams", size="sm")
+                    clear = gr.Button("🗑 Clear", size="sm")
+                # hidden until something is exported
+                export_file = gr.File(label="Download", interactive=False, visible=False)
+                # human-approval gate for send_message: preview first, nothing sent until Confirm
+                send_preview = gr.Textbox(label="Preview — edit if needed, nothing is sent yet", visible=False,
+                                          lines=3)
+                with gr.Row(elem_id="chat-tools"):
+                    send_confirm = gr.Button("Confirm & Send", variant="primary", visible=False, size="sm")
+                    send_cancel = gr.Button("Cancel", visible=False, size="sm")
+                send_status = gr.Markdown()
                 message = gr.Textbox(show_label=False, lines=1, max_lines=4, submit_btn="Ask",
                                      placeholder="Ask a question or a follow-up…")
                 agent_mode = gr.Checkbox(
@@ -396,27 +423,12 @@ def build_ui(rag: RAG) -> gr.Blocks:
                         sources = gr.Markdown(EMPTY_SOURCES, height=440)
                         with gr.Accordion("Other retrieved candidates", open=False):
                             others = gr.Markdown(max_height=300)
+                # what happened to the selected question at each step: FAISS, BM25, fusion, gate,
+                # re-ranker, timings
+                with gr.Accordion("🔍 Full trace: what happened at each step", open=True):
+                    trace_panel = gr.Markdown(EMPTY_TRACE, elem_id="trace-panel", max_height=700)
 
-        # what happened to the selected question at each step: FAISS, BM25, fusion, gate, re-ranker, timings
-        with gr.Accordion("🔍 Retrieval trace: what happened at each step", open=False):
-            trace_panel = gr.Markdown(EMPTY_TRACE)
-
-        with gr.Row():
-            clear = gr.Button("Clear conversation", size="sm")
-            chat_txt = gr.Button("Export .txt", size="sm")
-            chat_pdf = gr.Button("Export .pdf", size="sm")
-            answer_txt = gr.Button("Export selected answer .txt", size="sm")
-            answer_pdf = gr.Button("Export selected answer .pdf", size="sm")
-            send_btn = gr.Button("Send selected answer to Teams", size="sm")
-        export_file = gr.File(label="Download", interactive=False)
         cost = gr.Markdown(rag.tracker.summary(), visible=False)  # kept for the clear() wiring below
-
-        # human-approval gate for send_message: preview first, nothing sent until Confirm
-        send_preview = gr.Textbox(label="Preview — edit if needed, nothing is sent yet", visible=False, lines=3)
-        with gr.Row():
-            send_confirm = gr.Button("Confirm & Send", variant="primary", visible=False, size="sm")
-            send_cancel = gr.Button("Cancel", visible=False, size="sm")
-        send_status = gr.Markdown()
 
         gr.Markdown("---")
         with gr.Accordion("Ablation table — RAG day 2 (vector-only → +re-ranking → +BM25)", open=True):
@@ -432,10 +444,13 @@ def build_ui(rag: RAG) -> gr.Blocks:
         clear.click(handlers.clear, None, clear_outputs)
         # the chatbot's own 🗑 icon must forget the conversation too, or follow-ups use stale history
         chat.clear(handlers.clear, None, clear_outputs)
-        chat_txt.click(lambda t: handlers.export_conversation(t, "txt"), [turns], export_file)
-        chat_pdf.click(lambda t: handlers.export_conversation(t, "pdf"), [turns], export_file)
-        answer_txt.click(lambda t, s: handlers.export_answer(t, s, "txt"), [turns, selected], export_file)
-        answer_pdf.click(lambda t, s: handlers.export_answer(t, s, "pdf"), [turns, selected], export_file)
+        def shown(path):
+            return gr.update(value=path, visible=True)
+
+        chat_txt.click(lambda t: shown(handlers.export_conversation(t, "txt")), [turns], export_file)
+        chat_pdf.click(lambda t: shown(handlers.export_conversation(t, "pdf")), [turns], export_file)
+        answer_txt.click(lambda t, s: shown(handlers.export_answer(t, s, "txt")), [turns, selected], export_file)
+        answer_pdf.click(lambda t, s: shown(handlers.export_answer(t, s, "pdf")), [turns, selected], export_file)
         for btn in suggestion_buttons:
             btn.click(handlers.pick_suggestion, [btn], [message]).then(
                 handlers.ask, [message, chat, turns], ask_outputs)

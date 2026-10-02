@@ -16,7 +16,7 @@ harness (app/agent.py) imports build_tools(rag) to get both, wired together.
     send_message(text)        -> drafts a Teams message; never sends it. The
                                   agent cannot call app.send_message.send_to_teams
                                   directly -- only a human, via the existing
-                                  "Send selected answer to Teams" + "Confirm & Send"
+                                  "Send to Teams" + "Confirm & Send"
                                   buttons in app/ui.py, can actually transmit it.
 
 All six always return a string, never raise: an empty or failed result comes
@@ -160,13 +160,13 @@ def date_diff(start: str, end: str) -> str:
 def send_message(text: str) -> str:
     """Drafts a Teams message. Deliberately does not call send_to_teams(): the only
     way this text reaches Teams is a human selecting this answer in the chat and
-    clicking 'Send selected answer to Teams' then 'Confirm & Send' in app/ui.py."""
+    clicking 'Send to Teams' then 'Confirm & Send' in app/ui.py."""
     if not text or not text.strip():
         return "Error: cannot draft an empty message."
     if len(text) > MAX_CHARS:
         return f"Error: message is {len(text)} characters, limit is {MAX_CHARS}."
     return (f"Drafted, not sent. A human must select this answer and click "
-            f"'Send selected answer to Teams', then 'Confirm & Send', to actually send it:\n\n{text}")
+            f"'Send to Teams', then 'Confirm & Send', to actually send it:\n\n{text}")
 
 
 SEARCH_CORPUS_SCHEMA = {
