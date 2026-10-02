@@ -394,7 +394,7 @@ def build_ui(rag: RAG) -> gr.Blocks:
                     with gr.Tab("Sources"):
                         sources = gr.Markdown(EMPTY_SOURCES, height=440)
                         with gr.Accordion("Other retrieved candidates", open=False):
-                            others = gr.Markdown()
+                            others = gr.Markdown(max_height=300)
 
         with gr.Row():
             clear = gr.Button("Clear conversation", size="sm")
