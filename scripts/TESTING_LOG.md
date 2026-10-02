@@ -58,6 +58,9 @@ re-ranker, Qwen2.5-3B), *api* ones on `text-embedding-3-small` + `gpt-4o-mini`.
 | 41 | 02 Oct 01:46 | Sai | Agent on an off-topic question ("best pizza topping") | Answered from general knowledge instead of refusing | Prompt: search first, refuse when nothing is found | Refuses |
 | 42 | 02 Oct 06:28 | Sai | A bare "hi" in RAG mode | Refused with the off-topic sentence | Greetings answered directly at $0; candidates list scrolls | Friendly reply |
 | 43 | 02 Oct 10:40 | Rayyan | Routing through the real UI, one question per tool (local) | 7/9 as expected: on the fine question it searched but did the maths in its head (and used 3% instead of 7%); on pizza it refused without searching first | — | Re-check in api mode |
+| 44 | 02 Oct 00:20 | Sai | Agent eval questions audited against the real course spec repo (`GenAI_week`, not just the internal checklist) | Used a free-text `"scenario"` field instead of the required `"sub_type"` with 11 exact enum values | Rewrote all 11 questions to the correct taxonomy; verified `rephrase_retry`'s wording genuinely fails/succeeds via `retrieval_checker.py` (api mode) | All 11 required sub-types present, 60 questions total, minimums/priority checks still pass |
+| 45 | 02 Oct 00:42 | Sai | RAG demo questions in the README against the same spec repo | Used invented categories instead of the 6 course-required scenarios (Single chunk, Multiple chunks, Follow-up, Out of scope, Prompt injection, Exact term) | Rewrote the section to the 6 required scenarios, verified against real corpus pages | `readme_rag_demo` checklist check still passes |
+| 46 | 02 Oct 07:26 | Sai | Teams webhook, after a user report that a real send wasn't arriving | `.env` pointed at a different flow ("Send webhook alerts to a channel") that had failed on every single run since 01 Oct — an "Attachments is null" error in its own branching logic, unrelated to the #38 payload fix | Repointed `.env` at the verified-working "Send webhook alerts to General" flow (confirmed via Power Automate run history, not guessed) | New run Succeeded; message confirmed arrived in Teams by the user |
 
 ## 2. Improvements
 
@@ -103,6 +106,9 @@ re-ranker, Qwen2.5-3B), *api* ones on `text-embedding-3-small` + `gpt-4o-mini`.
 | 02 Oct 00:59 | Sai | Citation check | 39 |
 | 02 Oct 01:46 | Sai | Agent refuses off-topic questions | 41 |
 | 02 Oct 06:28 | Sai | Greetings answered directly in RAG mode | 42 |
+| 02 Oct 00:20 | Sai | Agent eval questions rewritten to the correct `sub_type` taxonomy | 44 |
+| 02 Oct 00:42 | Sai | RAG demo questions rewritten to the 6 required scenarios | 45 |
+| 02 Oct 07:26 | Sai | Teams webhook repointed at the working flow | 46 |
 
 ## 3. How the numbers moved
 
@@ -146,7 +152,6 @@ Agent:
 
 - Every agent number above is local mode (Qwen2.5-3B) or the mock client: re-run
   `agent_eval_runner.py`, `agent_vs_rag.py` and `action_injection_test.py` in api mode.
-- The agent eval questions (one per demo scenario) still have to be written by the team.
 - Two negation questions and the Annex II count question are still open in `FAILURE_LOG.md`.
 - Only 4 to 6 should-refuse questions in the set: two of them score high whatever the threshold.
 - The local model sometimes skips `calculator` and does the maths itself (test 43).
