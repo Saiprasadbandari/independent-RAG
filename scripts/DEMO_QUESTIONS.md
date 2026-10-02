@@ -103,7 +103,7 @@ Hello! What can you help me with?
 What is the best pizza topping?
 ```
 
-**Act, with approval**: the agent only drafts; then click **Send selected answer to Teams**,
+**Act, with approval**: the agent only drafts; then click **Send to Teams**,
 check the preview, **Confirm & Send**.
 ```
 Send 'Team meeting at 3pm' to our team channel.

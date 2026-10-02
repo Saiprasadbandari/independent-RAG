@@ -282,7 +282,7 @@ What it shows:
 
 ## Using the app
 
-- **Retrieval trace**: open "🔍 Retrieval trace" under the chat to see what happened to the
+- **Retrieval trace**: "🔍 Full trace", under the cost table on the right, shows what happened to the
   selected question at each step: whether it was cleaned or rewritten, cache hits, how many
   passages FAISS and BM25 returned and how long each took, the off-topic gate (best similarity
   against the threshold), the re-ranker's cut-off, and a table of every candidate with its rank in
@@ -387,7 +387,7 @@ for a fine, then calculate it for a given turnover) and answers small talk witho
   After 3 failed calls in a row (`RETRY_LIMIT`) it stops and says it doesn't have the
   information, and an identical repeated call is refused instead of run again.
 - **Human approval for actions**: `send_message` only drafts. Nothing reaches Teams until a
-  person clicks **Send selected answer to Teams**, checks or edits the preview and clicks
+  person clicks **Send to Teams**, checks or edits the preview and clicks
   **Confirm & Send**. The agent is only offered `send_message` when the user's own message asks
   to send, post or share something (see [Injection against actions](#injection-against-actions-agent)).
 - **Grounding**: the system prompt tells it to answer only from tool results, cite source and
